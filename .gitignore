@@ -1,0 +1,34 @@
+# Runtime / local state
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# JS / frontend
+node_modules/
+dist/
+build/
+.next/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs / generated runtime artifacts
+*.log
+logs/
+artifacts/
+cache/
