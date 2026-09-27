@@ -1,11 +1,25 @@
 # Codex Start Instruction
 
-このリポジトリの仕様を読み、`PROJECT_HANDOFF.md` を最上位の引継ぎ資料として扱ってください。
+このリポジトリのText v0.1を実装します。
+
+## 最初に必ず読む
+
+`PROJECT_HANDOFF.md`は入口であり、短い概要だけを仕様全文として扱わないでください。
+
+1. `PROJECT_HANDOFF.md`
+2. `docs/SPEC_REGISTRY.md`
+3. `docs/canonical/r16/MANIFEST.md`の順序で**PROJECT_HANDOFF r16 全19part**
+4. `docs/TEXT_V01_IMPLEMENTATION_SPEC.md`
+5. `docs/text_v01/MANIFEST.md`の順序で**Text v0.1 implementation spec 全4part**
+6. `docs/TEXT_V01_READINESS_AUDIT.md`
+7. `docs/ANALYZER_GOLDEN_SPEC.md`
+8. `docs/RETRIEVAL_P0_SPEC.md`
+
+Canonical source specsは5冊です。index/READMEだけを読んで、そこに記載のない要求を削除・未要求扱いしないでください。
 
 ## 目的
 
-Text v0.1 の P0 を実装します。
-最初から全機能を実装するのではなく、まず foreground conversation path の最小Vertical Sliceを動かします。
+Text v0.1 の P0 を実装します。最初から全機能を実装するのではなく、まず foreground conversation path の最小Vertical Sliceを動かします。
 
 ## 着手順
 
@@ -30,6 +44,7 @@ Text v0.1 の P0 を実装します。
 - assistantのcanonical messageは、実際にdeliveryされた範囲だけとする。
 - delivery前のMain failureのみfallback可能。delivery後に別modelで文章を無言継続しない。
 - Analyzer失敗はforeground conversationを止めない。
+- overview/indexにない項目でもcanonical r16に存在する要求を無視しない。
 
 ## 仕様矛盾を見つけた場合
 
