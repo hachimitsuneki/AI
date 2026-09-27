@@ -1,0 +1,102 @@
+## 2.3 v0.1 要件 (canonical IDs)
+
+### Core
+| ID | 詳細 | 状態 | 受入条件 |
+|---|---|---|---|
+| REQ-V01-CORE-01 | テキストで複数セッション継続会話 | 方向性の合意 | 再起動後も状態復元 |
+| REQ-V01-CORE-02 | 初期人格: 好奇心やや高/遊び心やや高/自己主張中/少しいたずらっぽい | 方向性の合意 | 常にふざけず、軽い予測不能性 |
+| REQ-V01-CORE-03 | Self/User分離 | 方向性の合意 | User preferenceがSelfへ自動転写されない |
+| REQ-V01-CORE-04 | 未形成状態を許す | 方向性の合意 | 「まだ分からない」が正常 |
+| REQ-V01-CORE-05 | Observability | AI提案・重要 | 各応答の構造化内部情報を追跡可能 |
+
+### Memory
+| ID | 詳細 | 状態 | 受入条件 |
+|---|---|---|---|
+| REQ-V01-MEM-01 | Memory ItemをEpisode/Claimに分離 | AI提案・強く推奨 | 出来事と現在認識を別管理 |
+| REQ-V01-MEM-02 | Memory Candidate Gate | AI提案・重要 | 保存/拒否/重複/訂正理由を記録 |
+| REQ-V01-MEM-03 | Recall | AI提案・重要 | Semantic/keyword/recency/importance等で検索 |
+| REQ-V01-MEM-04 | Recall ≠ Mention | 方向性の合意 | 取得した記憶を必ず口にしない |
+| REQ-V01-MEM-05 | Memory Provenance | AI提案・重要 | 元Messageまで追跡可能 |
+| REQ-V01-MEM-06 | Claim Correction | AI提案・重要 | 過去Episodeを壊さずactive Claimを更新 |
+| REQ-V01-MEM-07 | Revision種別を区別 | AI提案 | correction/change_over_time/clarification/deletion |
+| REQ-V01-MEM-08 | 非破壊的忘却 | AI提案 | v0.1は時間経過だけで物理削除しない |
+| REQ-V01-MEM-09 | User Forget | 明示決定 | `soft_deleted`; AIから完全不可視、Developer履歴は残る |
+| REQ-V01-MEM-10 | Autonomous Archive | 明示決定 | AIはACTIVE→ARCHIVEDのみ可能。soft delete不可 |
+| REQ-V01-MEM-11 | Archived Memory再活性化 | AI提案 | 強い関連/明示言及でACTIVE候補に戻る |
+| REQ-V01-MEM-12 | Mention/Recall回数を追跡 | AI提案 | 同じ記憶の蒸し返しを観測可能 |
+| REQ-V01-MEM-13 | 明示的な「覚えて」を強い保存シグナルとして扱う | AI提案・強く推奨 | 通常Gateより強く保存するが、秘密情報/認証情報は除外 |
+| REQ-V01-MEM-14 | Memory Gateの判断軸を記録 | AI提案・重要 | importance / future usefulness / novelty / stability / relationship-or-commitment relevance / duplication等を追跡 |
+| REQ-V01-MEM-15 | Autonomous Archiveに保護条件を設ける | 明示決定の具体化 | Core相当・Promise/Commitment・重要なcurrent Claim・relationship-critical memoryを低重要度だけでArchiveしない |
+
+### Self
+| ID | 詳細 | 状態 | 受入条件 |
+|---|---|---|---|
+| REQ-V01-SELF-01 | Self Observation生成 | AI提案 | 発言/行動から構造化観察を作る |
+| REQ-V01-SELF-02 | ユーザー誘導と自発反応のEvidence Weightを分離 | 強く推奨 | independent evidenceを高く評価 |
+| REQ-V01-SELF-03 | Hypothesis lifecycle | AI提案 | HYPOTHESIS→TENTATIVE→PROMOTION_CANDIDATE |
+| REQ-V01-SELF-04 | 反証を保持 | AI提案 | contradictionでconfidence低下/仮説細分化 |
+| REQ-V01-SELF-05 | Learned Self Model | AI提案・重要 | Core人格と経験由来自己認識を分離 |
+| REQ-V01-SELF-06 | v0.1でSelf Model昇格を観察可能にする | AI提案 | 自動昇格は慎重/Developer確認可能 |
+
+### User / Relationship
+| ID | 詳細 | 状態 | 受入条件 |
+|---|---|---|---|
+| REQ-V01-USER-01 | User Model | AI提案・重要 | 会話履歴と別に現在理解を保持 |
+| REQ-V01-USER-02 | User Hypothesis | AI提案・強く推奨 | 直接確認と推測を分離 |
+| REQ-V01-USER-03 | Temporal User Model | AI提案 | current interestとlong-term preference分離 |
+| REQ-V01-REL-01 | Relationship多次元化 | AI提案・強く推奨 | familiarity/trust/comfort/shared history/style |
+| REQ-V01-REL-02 | Shared Relationship History | AI提案 | 二人に起きた重要Episodeを証拠化 |
+| REQ-V01-REL-03 | Relationship Independence | 既存要件具体化 | 親密さが同意圧力にならない |
+| REQ-V01-REL-04 | 根拠のないユーザー愛着推論をしない | AI提案・重要 | 利用頻度だけで愛情/依存を断定しない |
+
+### Affect
+| ID | 詳細 | 状態 | 受入条件 |
+|---|---|---|---|
+| REQ-V01-AFF-01 | Appraisal | AI提案・重要 | Self/User/Relationship/Stateを参照して意味評価 |
+| REQ-V01-AFF-02 | Emotion Episode | AI提案 | 種類/対象/原因/強度/根拠/行動傾向 |
+| REQ-V01-AFF-03 | Mood State | AI提案 | valence/activation/controlを分離保持 |
+| REQ-V01-AFF-04 | Affect Decay | AI提案・強く推奨 | 停止中経過時間も反映 |
+| REQ-V01-AFF-05 | Affect Separation | AI提案・必須級 | 単発感情でSelf/Relationshipを大幅変更しない |
+| REQ-V01-AFF-06 | Emotional Memory Gate | AI提案 | Emotionを自動長期保存しない |
+| REQ-V01-AFF-07 | AI_STATEを擬似人間生理ではなくAIとして意味のある状態として扱う | AI提案・重要 | curiosity/social_interest/engagement/fatigue_like等を用い、fatigue_likeを肉体疲労と偽装しない |
+| REQ-V01-AFF-08 | Emotion表現を誇張命令にしない | AI提案 | Promptでは「mild frustration + behavior tendency」のように状態と傾向を渡し、演技過剰を避ける |
+| REQ-V01-AFF-09 | Affectの非操作原則 | AI提案・重要 | 感情状態をユーザーの利用継続・同意・依存を強制するために使用しない |
+
+### UI
+| ID | 詳細 | 状態 | 受入条件 |
+|---|---|---|---|
+| REQ-V01-UI-01 | Chat-centric UI | 方向性の合意 | 会話を主視覚要素にする |
+| REQ-V01-UI-02 | Developer Inspector | AI提案・強く推奨 | Recall/State/Memory Gate/Model等を確認 |
+| REQ-V01-UI-03 | Memory Management UI | AI提案・重要 | Memory検索/出典/訂正/削除 |
+| REQ-V01-UI-04 | Self Inspector | AI提案 | CoreとLearned Selfを区別表示 |
+| REQ-V01-UI-05 | User/Developer mode分離 | AI提案 | 通常UIと育成UIを論理分離 |
+| REQ-V01-UI-06 | 汎用的で見やすいChatデザイン | 方向性の合意 | 特殊Dashboard化しない |
+| REQ-V01-UI-07 | Motion Design | 方向性の合意 | transitions.devを主要参考; 意味ある状態遷移に限定 |
+
+### Runtime / Orchestrator
+| ID | 詳細 | 状態 | 受入条件 |
+|---|---|---|---|
+| REQ-V01-ORCH-01 | 通常ターンのforeground generative callは原則Main Dialogue LLM 1回 | AI提案・強く推奨 | Memory/Appraisal等のために複数LLMを直列実行してTTFTを悪化させない |
+| REQ-V01-ORCH-02 | Recall・DB state load・明示command処理をMain生成前に並列化 | AI提案・強く推奨 | 独立処理を直列化しない |
+| REQ-V01-ORCH-03 | 応答後にTurn Analyzerを非同期実行し、Memory/Self/User/Appraisal/Relationship候補を1回のstructured callで抽出 | AI提案・強く推奨 | foreground responseを解析完了待ちにしない |
+| REQ-V01-ORCH-04 | foreground requestはbackground analysis/reflectionより常に高優先 | AI提案・重要 | 新しいUser Message到着時にbackgroundがTTFTを大きく悪化させない |
+| REQ-V01-ORCH-05 | decay、Memory lifecycle、soft delete、confidence集約、provenance、token budget等は決定論的コードが所有 | AI提案・重要 | LLMの数値気分で状態遷移しない |
+| REQ-V01-ORCH-06 | SLM/LLM由来の内部更新はschema-constrained structured output + validationを通す | AI提案・重要 | 不正/欠損outputをDBへ直接commitしない |
+| REQ-V01-ORCH-07 | Analyzer遅延/失敗時もChat継続可能 | AI提案・重要 | last committed state + recent raw turnsで次ターンを処理可能 |
+| REQ-V01-ORCH-08 | Reflection/Consolidation/Archive reviewは毎ターン実行せずidle/batch job化 | AI提案・強く推奨 | 通常会話のcritical path外 |
+| REQ-V01-ORCH-09 | Model rolesをDialogue / Analyzer / Embedding / optional Rerankerへ分離しGatewayで交換可能 | AI提案・重要 | 個別benchmarkで差替可能 |
+| REQ-V01-ORCH-10 | TTFT・E2E・prefill・decode(TPOT/tok/s)・input/output tokens・VRAM/RAM・background delayを計測 | AI提案・必須級 | 各turnのResponse Traceへ記録 |
+| REQ-V01-ORCH-11 | v0.1では人格ChatのMain generatorを毎ターンrouterで別モデルへ切替えない | AI提案 | Voice/persona driftを避け、routingはbounded subtasks優先 |
+| REQ-V01-ORCH-12 | Retrievalはraw conversation evidence + extracted Memoryのhybridを比較可能にする | AI提案・強く推奨 | LongMemEval系scenarioで比較 |
+| REQ-V01-ORCH-13 | Turn Analyzerの出力はDB確定値ではなくEvidence/Update Proposalとして扱う | AI提案・強く推奨 | LLM出力から直接Entityをmutationせず、validator/projectorを通す |
+| REQ-V01-ORCH-14 | Analyzerの強度・確信は原則ordinal enumで出力し、pseudo-precise floatをLLMに決めさせない | AI提案・重要 | weak/medium/strong等をコード側で重みへ写像できる |
+| REQ-V01-ORCH-15 | Analyzer commit前にreferential integrity / soft-delete・forget境界 / secret filter / duplicate・correction / stale revisionを検証 | AI提案・必須級 | 不整合・削除済み・秘密情報・古い解析結果が状態へ復活しない |
+| REQ-V01-ORCH-16 | Turn Analysisは`turn_id + analyzer_version`でidempotent、state revisionを持ちstale resultを安全にreject/rebaseできる | AI提案・重要 | retryしても二重Memory/二重Relationship updateを起こさない |
+| REQ-V01-ORCH-17 | Foreground優先はアプリ側Schedulerで保証し、runtimeのslot/process priorityだけに依存しない | AI提案・強く推奨 | 新規User入力時にAnalyzer/Reflectionをcancel/deferし、Main TTFTを守る |
+| REQ-V01-ORCH-18 | Analyzer入力では秘密情報を検出・マスクし、Memory Candidateへ昇格不能にする | AI提案・重要 | password/API key/token等が長期Memoryへ保存されない |
+| REQ-V01-ORCH-19 | Orchestrator比較を固定scenario + replayable DB snapshotで実施する | AI提案・必須級 | A/B/C profileを同一初期状態・同一turn列で比較可能 |
+| REQ-V01-ORCH-20 | Remote inference backendを任意で利用できるが、AI Core/Identity/Memory/Relationshipのcanonical stateはローカル側を権威とする | ユーザー提案を受けたAI提案・有力 | Colab等のruntime消失で人格/Memoryを失わない |
+| REQ-V01-ORCH-21 | Remote runtimeはephemeral workerとして扱い、切断/OOM/利用終了時にlocal fallbackまたは明示的degraded modeへ移行可能 | AI提案・重要 | Remote backend断でDB破損や会話履歴消失を起こさない |
+| REQ-V01-ORCH-22 | Remote backendへ送るContext Capsuleを最小化し、secret/soft-deleted/private suppression対象を送信しない | AI提案・重要 | Remote推論経路でもforget/privacy境界を破らない |
+| REQ-V01-ORCH-23 | Inference provider/runtime sessionのhardware・backend version・model・availabilityをTraceへ記録し、benchmarkを環境別に比較可能にする | AI提案・重要 | Colab GPU差等を混同せず再現可能な計測を残す |
+| REQ-V01-ORCH-24 | Voice時はSTT→LLM→TTSを全完了待ちで直列化せず、partial/final transcript・LLM token stream・TTS audio streamを段階的に重ねる | AI提案・強く推奨 | 完全文生成後にTTS開始する構成を避け、体感応答開始を早める |
