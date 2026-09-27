@@ -1,32 +1,36 @@
-# TEXT_V01_IMPLEMENTATION_SPEC.md
+# TEXT_V01_IMPLEMENTATION_SPEC.md — Canonical Index
 
 - Project: 自立型AI / 継続人格型デジタルコンパニオン
-- Spec: Text v0.1 非コード実装仕様
-- Version: 2026-09-27-r2
+- Logical specification: **Text v0.1 非コード実装仕様**
+- Version: `2026-09-27-r2`
 - Status: 実装仕様化済み / 実コード未着手
-- Canonical parent: `PROJECT_HANDOFF.md` r16
 
-このファイルはGitHub上の**実装仕様ナビゲータ**です。元の単一文書は、内容を落とさず以下の4ファイルへ分割しています。Codexは番号順にすべて読んでください。
+> **注意:** このファイルは仕様全文の要約ではなく、完全版へのindexです。このファイルだけを読んで実装しないでください。
 
-1. [`text_v01/01_CORE_CONTRACTS.md`](text_v01/01_CORE_CONTRACTS.md) — 実装対象、component topology、Contract Matrix、State ownership、Orchestrator / Retrieval
-2. [`text_v01/02_COMPONENT_DETAILS.md`](text_v01/02_COMPONENT_DETAILS.md) — Context / Gateway / Delivery / Analyzer / Domain Update
-3. [`text_v01/03_RUNTIME_ACCEPTANCE.md`](text_v01/03_RUNTIME_ACCEPTANCE.md) — normal sequence、degradation、priority、deployment、privacy、observability、acceptance、WP、保留事項、ER/status
-4. [`text_v01/04_EXPLICIT_COMMANDS.md`](text_v01/04_EXPLICIT_COMMANDS.md) — r16 Explicit Remember / Forget P0 boundary
+Git化前には `TEXT_V01_IMPLEMENTATION_SPEC.md` という**1冊の独立仕様書**として存在していました。長文を消さずGitで扱いやすくするため、現在は以下4partへ物理分割しています。
 
-## 実装開始順
+## Canonical reading order
 
-`WP-TXT-01 → WP-TXT-02 → WP-TXT-03 + WP-TXT-04 → WP-TXT-05 + WP-TXT-06`
+1. [`text_v01/01_CORE_CONTRACTS.md`](text_v01/01_CORE_CONTRACTS.md) — sections 1–5.2
+2. [`text_v01/02_COMPONENT_DETAILS.md`](text_v01/02_COMPONENT_DETAILS.md) — sections 5.3–5.7
+3. [`text_v01/03_RUNTIME_ACCEPTANCE.md`](text_v01/03_RUNTIME_ACCEPTANCE.md) — sections 6–16
+4. [`text_v01/04_EXPLICIT_COMMANDS.md`](text_v01/04_EXPLICIT_COMMANDS.md) — section 17 / r16 readiness patch
 
-まずforegroundの「1ターン普通に会話できる最小Vertical Slice」を完成・検証し、その後`WP-TXT-07 + WP-TXT-08`へ進みます。
+Integrity metadata:
+- original source bytes: **29,854**
+- original source SHA-256: `c4b736ac99268b39e214ec11712ff967dc7698b7071f1788a5972206e5dfb59b`
+- manifest: [`text_v01/MANIFEST.md`](text_v01/MANIFEST.md)
 
-## 不変条件
+## Relationship to the other specifications
 
-- canonical stateはsingle-writer。
-- assistant canonical messageは実際にdeliveryされた範囲だけ。
-- `soft_deleted` MemoryはRecall/Prompt/Analyzer evidenceへ復活させない。
-- Analyzerはproposalのみ生成し、Domain mutationはValidator + Projector経由。
-- secret / credentialは長期Memoryへ保存しない。
-- delivery前のMain failureのみfallback可能。delivery後の無言model継ぎ足しは禁止。
-- Analyzer失敗はforeground conversationを止めない。
+この仕様書は5つのcanonical source specsのうち1冊です。全体台帳は [`SPEC_REGISTRY.md`](SPEC_REGISTRY.md)。
 
-詳細は上記4ファイルを正とします。
+- `PROJECT_HANDOFF.md` r16 — 全体handoff
+- **このText v0.1 implementation spec** — component / ownership / failure / acceptance / work package
+- `TEXT_V01_READINESS_AUDIT.md` — 実装着手監査
+- `ANALYZER_GOLDEN_SPEC.md` — Analyzer P0 semantic Golden
+- `RETRIEVAL_P0_SPEC.md` — Retrieval P0 field contract
+
+## Precedence
+
+このindexと4partの内容に差異がある場合、**4partの本文**を正とする。`PROJECT_HANDOFF r16`の全体決定・訂正とも併読する。
