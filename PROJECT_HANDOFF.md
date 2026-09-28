@@ -2,11 +2,13 @@
 
 - Project: 自立型AI / 継続人格型デジタルコンパニオン
 - Canonical source version: `0.1-draft-handoff-2026-09-27-r16`
-- Updated: 2026-09-28 JST
-- Status: **WP-TXT-01〜06 + WP-TXT-06.5実装済み / WP-TXT-07〜08はfixture Golden検証済み / 実Ollama Analyzerは未検証**
+- Updated: 2026-09-29 JST
+- Status: **WP-TXT-01〜08のP0 hardening実装済み / 33 automated tests・P0 Goldens成功 / 実OllamaのMemory semantic E2Eは未成立。Explicit ForgetのRetrieval/Context不可視化はlive確認済み**
 - Target branch: `codex/text-v01-p0`
-- Task implementation commit: `3c74754` (`Implement chat usability and semantic projection`); this handoff status is recorded in a following documentation-only commit.
-- Uncommitted changes after handoff: none
+- Baseline before this P0 hardening: `ced97c9c32d3442063e4323e4bec7fc48efc9cfa`
+- Previous task implementation commit: `3c74754` (`Implement chat usability and semantic projection`)
+- P0 hardening implementation commit: `a8ed997` (`Harden Text v0.1 P0 memory handling`); this handoff status is recorded in the following documentation-only commit.
+- Uncommitted changes after the handoff documentation commit: none.
 
 > **重要:** このルートファイルはGit上の入口/索引です。元の約20万bytesの`PROJECT_HANDOFF.md r16`を要約して置換するものではありません。完全なr16本文は `docs/canonical/r16/` の19partを順番に読んでください。
 
@@ -45,11 +47,12 @@ Git化前に独立仕様書として存在した文書は、r16 handoffを含め
 
 ## Current implementation state
 
-- Text v0.1: **WP-TXT-01〜06.5実装済み。WP-TXT-07〜08はP0 fixture GoldenとProjector経路を検証済み。実モデルによるAnalyzer意味投影は未確認。**
+- Text v0.1: **WP-TXT-01〜08のP0 implementation and fixture Goldens are verified. Real Ollama Memory/User semantic E2E did not pass; see `CURRENT.md` for runtime evidence and limitations.**
 - Application code: Chat usability, async Turn Analyzer, schema/reference/privacy Validator, atomic idempotent Projectorを追加。機能ごとの実装・実動・未確認範囲は [`CURRENT.md`](CURRENT.md) を参照
-- DB schema / migration: `0002_chat_usability.sql` and `0003_turn_analysis.sql` を追加。返信ID、turn analysis/proposal/commitを永続化
-- automated tests: bundled Python runtimeで24件成功。7 P0 Analyzer Goldensも全て成功
-- model server: ローカルOllama health確認は成功したが、実Analyzer呼出しは設定済み60秒timeout後に`provider_unavailable`。WP07/08は本番用モデル応答をまだ実証していない
+- DB schema / migration: `0002_chat_usability.sql`、`0003_turn_analysis.sql`、`0004_relationship_source_visibility.sql`。Reply、turn analysis/proposal/commit、Relationship provenanceを保存。`0003`末尾の不正なliteral `\n`を修正
+- automated tests: bundled Python runtimeで33件成功。AN-GOLD-002/003/004/006/011/012/014、CMD-GOLD-001/002/003を含む
+- model server: Local Ollama healthとMain応答、`think:false`、thinking-only/no-contentのAPI挙動を実確認。Analyzer semantic Memory/User updateは失敗/timeoutし、実モデルによるprojectionは未確認
+- Explicit Forget: unique targetのatomic soft-delete/revisionと、その後のRetrieval/Contextからの不可視化をisolated DB + real Ollamaで確認。後続Main回答が一般知識として対象語に触れる可能性は`CURRENT.md`に記録
 - hardware benchmark: 未実施。モデル/runtime tuningはしていない
 
 ## Implementation path and current position
@@ -67,7 +70,7 @@ foreground: 1ターン普通に会話できるVertical Slice — implemented / l
 ↓
 WP-TXT-06.5 Chat Usability — implemented / UI mostly live-verified
 ↓
-WP-TXT-07 Turn Analyzer + WP-TXT-08 Validator/Projector — implemented / seven P0 fixture Goldens pass / real Analyzer model unverified
+WP-TXT-07 Turn Analyzer + WP-TXT-08 Validator/Projector — implemented / seven P0 Analyzer fixture Goldens and command Goldens pass / real Memory/User semantic E2E did not pass; real-model limits and retry evidence are in CURRENT.md
 ↓
 persistent Memory / Self / User / Relationship projector paths — fixture-backed Domain writes pass; real model projection unverified
 ↓
