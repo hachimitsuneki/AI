@@ -23,6 +23,7 @@ class RuntimeConfig:
     request_timeout_seconds: float
     analyzer_model: str
     analyzer_timeout_seconds: float
+    think: bool | str | None
     profile_id: str
     identity_name: str
     identity_role: str
@@ -40,6 +41,19 @@ def _seconds(name: str, default: float, minimum: float = 0.001) -> float:
     if not math.isfinite(value) or value < minimum:
         raise ValueError(f"{name} must be at least {minimum} seconds")
     return value
+
+
+def _think_setting(name: str, default: str = "false") -> bool | str | None:
+    value = os.environ.get(name, default).strip().casefold()
+    if value in {"", "auto", "default", "none"}:
+        return None
+    if value in {"true", "1", "yes", "on"}:
+        return True
+    if value in {"false", "0", "no", "off"}:
+        return False
+    if value in {"low", "medium", "high", "max"}:
+        return value
+    raise ValueError(f"{name} must be true/false, a think level, or auto")
 
 
 def load_config() -> RuntimeConfig:
@@ -68,6 +82,7 @@ def load_config() -> RuntimeConfig:
             os.environ.get("COMPANION_MAIN_MODEL", "qwen3.5:2b-q4_K_M"),
         ),
         analyzer_timeout_seconds=_seconds("COMPANION_ANALYZER_TIMEOUT_SECONDS", 60.0),
+        think=_think_setting("COMPANION_THINK", "false"),
         profile_id=os.environ.get("COMPANION_PROFILE_ID", "local-provisional-v1"),
         identity_name=os.environ.get("COMPANION_IDENTITY_NAME", "AI"),
         identity_role=os.environ.get("COMPANION_IDENTITY_ROLE", "digital companion"),

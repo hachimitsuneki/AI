@@ -154,6 +154,19 @@ class AnalysisGoldenTests(unittest.TestCase):
                    VALUES (?, ?, ?, 'direct_statement', 1.0)""",
                 (new_id(), memory_id, evidence_id),
             )
+            user_model_id = new_id()
+            conn.execute(
+                """INSERT INTO USER_MODEL_ITEM
+                   (id, user_profile_id, category, subject, value, confidence, temporal_scope,
+                    status, valid_from, updated_at)
+                   VALUES (?, ?, 'fact', ?, ?, .7, 'persistent', 'active', ?, ?)""",
+                (user_model_id, self.scope["user_profile_id"], "猫", statement, timestamp, timestamp),
+            )
+            conn.execute(
+                """INSERT INTO USER_MODEL_EVIDENCE(user_model_item_id, memory_claim_id, support_weight)
+                   VALUES (?, ?, .75)""",
+                (user_model_id, memory_id),
+            )
         return memory_id, evidence_id
 
     def service(self, output: dict) -> tuple[TurnAnalysisService, FixtureAnalyzer]:
@@ -181,6 +194,23 @@ class AnalysisGoldenTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM SELF_HYPOTHESIS").fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM USER_MODEL_ITEM").fetchone()[0], 2)
 
+    def test_delayed_analysis_recent_context_excludes_future_turns(self) -> None:
+        _prior, prior_id = self.make_turn("事前の話です。")
+        target_turn, _target_id = self.make_turn("このターンを分析してください。")
+        _future, future_id = self.make_turn("これは後から来た訂正です。")
+        with self.db.transaction() as conn:
+            conn.execute("UPDATE MESSAGE SET created_at = '2020-01-01T00:00:00.000+00:00' WHERE id = ?", (prior_id,))
+            conn.execute(
+                "UPDATE MESSAGE SET created_at = '2020-01-02T00:00:00.000+00:00' WHERE id = ?",
+                (target_turn["user_message_id"],),
+            )
+            conn.execute("UPDATE MESSAGE SET created_at = '2020-01-03T00:00:00.000+00:00' WHERE id = ?", (future_id,))
+        service, _provider = self.service(empty_analysis())
+        snapshot = service.build_input(target_turn["turn_id"])
+        recent_ids = [item["message_id"] for item in snapshot["recent_context_messages"]]
+        self.assertIn(prior_id, recent_ids)
+        self.assertNotIn(future_id, recent_ids)
+
     def test_an_gold_003_correction_keeps_history_and_revises_current_claim(self) -> None:
         memory_id, _ = self.add_existing_user_claim("ユーザーが猫を飼っている")
         turn, user_id = self.make_turn("前に言った猫、俺の猫じゃなくて実家の猫ね")
@@ -196,9 +226,21 @@ class AnalysisGoldenTests(unittest.TestCase):
             old = conn.execute("SELECT status FROM MEMORY_ITEM WHERE id = ?", (memory_id,)).fetchone()[0]
             revision = conn.execute("SELECT revision_type FROM MEMORY_REVISION WHERE memory_item_id = ?", (memory_id,)).fetchone()[0]
             count = conn.execute("SELECT COUNT(*) FROM MEMORY_ITEM WHERE ai_identity_id = ?", (self.scope["ai_identity_id"],)).fetchone()[0]
+            user_models = conn.execute(
+                "SELECT value, status FROM USER_MODEL_ITEM WHERE user_profile_id = ? ORDER BY valid_from",
+                (self.scope["user_profile_id"],),
+            ).fetchall()
+            current_user_models = [row["value"] for row in user_models if row["status"] in {"active", "current", "confirmed"}]
+            context_user_models = self.repo.learned_context(
+                self.scope["ai_identity_id"], self.scope["user_profile_id"]
+            )["user_model"]
             self.assertEqual(old, "superseded")
             self.assertEqual(revision, "correction")
             self.assertEqual(count, 2)
+            self.assertEqual(sum(row["status"] == "superseded" for row in user_models), 1)
+            self.assertEqual(len(current_user_models), 1)
+            self.assertEqual(len(context_user_models), 1)
+            self.assertEqual(context_user_models[0]["value"], "猫はユーザーの実家の猫")
 
     def test_an_gold_004_change_over_time_preserves_previous_claim(self) -> None:
         memory_id, _ = self.add_existing_user_claim("ユーザーはジャンプスケアが苦手")
@@ -214,9 +256,42 @@ class AnalysisGoldenTests(unittest.TestCase):
         with self.db.session() as conn:
             old = conn.execute("SELECT status FROM MEMORY_ITEM WHERE id = ?", (memory_id,)).fetchone()[0]
             revision = conn.execute("SELECT revision_type FROM MEMORY_REVISION WHERE memory_item_id = ?", (memory_id,)).fetchone()[0]
+            models = conn.execute(
+                "SELECT value, status FROM USER_MODEL_ITEM ORDER BY valid_from"
+            ).fetchall()
             self.assertEqual(old, "superseded")
             self.assertEqual(revision, "change_over_time")
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM MEMORY_ITEM").fetchone()[0], 2)
+            self.assertEqual(sum(row["status"] == "superseded" for row in models), 1)
+            context_models = self.repo.learned_context(
+                self.scope["ai_identity_id"], self.scope["user_profile_id"]
+            )["user_model"]
+            self.assertEqual([row["value"] for row in context_models], ["最近はジャンプスケアも平気"])
+
+    def test_contradiction_is_counterevidence_and_does_not_supersede_current_user_claim(self) -> None:
+        memory_id, _ = self.add_existing_user_claim("ユーザーは猫が好き")
+        turn, user_id = self.make_turn("実は猫が好きではない")
+        self.save_retrieved_memory(turn, memory_id)
+        output = empty_analysis()
+        output["memory_candidates"] = [memory_candidate(
+            "猫", "ユーザーは猫が好きではない", user_id,
+            action="contradicts", memory_id=memory_id,
+        )]
+        service, _ = self.service(output)
+        self.assertEqual(service.run(turn["turn_id"])["status"], "committed")
+        with self.db.session() as conn:
+            item = conn.execute("SELECT status FROM MEMORY_ITEM WHERE id = ?", (memory_id,)).fetchone()[0]
+            claim = conn.execute("SELECT claim_status FROM MEMORY_CLAIM WHERE memory_item_id = ?", (memory_id,)).fetchone()[0]
+            counter = conn.execute(
+                "SELECT message_id, evidence_type FROM MEMORY_EVIDENCE WHERE memory_item_id = ? AND evidence_type = 'counterevidence'",
+                (memory_id,),
+            ).fetchone()
+            models = conn.execute("SELECT value, status FROM USER_MODEL_ITEM").fetchall()
+        self.assertEqual((item, claim), ("active", "current"))
+        self.assertIsNotNone(counter)
+        self.assertEqual(counter["message_id"], user_id)
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0]["status"], "active")
 
     def test_an_gold_006_explicit_remember_protects_future_commitment(self) -> None:
         self.assertEqual(detect_explicit_command("覚えて。来月この映画、一緒に見よう。")[0], "remember")

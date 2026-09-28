@@ -60,6 +60,7 @@ class OllamaClient:
         self.embedding_model = config.embedding_model
         self.context_budget_tokens = config.context_budget_tokens
         self.max_generation_tokens = config.max_generation_tokens
+        self.think = config.think
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _post_json(self, path: str, payload: dict[str, Any], timeout: float | None = None) -> Any:
@@ -125,22 +126,21 @@ class OllamaClient:
     ) -> dict[str, Any]:
         if cancel.is_set():
             raise GenerationCancelled("analysis cancelled before provider request")
-        data = self._post_json(
-            "/api/chat",
-            {
-                "model": model or self.main_model,
-                "messages": messages,
-                "format": schema,
-                "stream": False,
-                "options": {"temperature": 0},
-            },
-            timeout=timeout,
-        )
+        payload: dict[str, Any] = {
+            "model": model or self.main_model,
+            "messages": messages,
+            "format": schema,
+            "stream": False,
+            "options": {"temperature": 0},
+        }
+        if self.think is not None:
+            payload["think"] = self.think
+        data = self._post_json("/api/chat", payload, timeout=timeout)
         if cancel.is_set():
             raise GenerationCancelled("analysis cancelled before commit")
         message = data.get("message") or {}
         content = message.get("content")
-        if not isinstance(content, str):
+        if not isinstance(content, str) or not content.strip():
             raise GenerationFailure("invalid_analysis_response", "Analyzer returned no JSON content.", retryable=True)
         try:
             result = json.loads(content)
@@ -155,7 +155,7 @@ class OllamaClient:
         messages: list[dict[str, str]],
         cancel: Event,
     ) -> Iterator[tuple[GenerationDelta, GenerationMetrics | None]]:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.main_model,
             "messages": messages,
             "stream": True,
@@ -164,6 +164,8 @@ class OllamaClient:
                 "num_predict": self.max_generation_tokens,
             },
         }
+        if self.think is not None:
+            payload["think"] = self.think
         request = urllib.request.Request(
             self.base_url + "/api/chat",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -187,6 +189,8 @@ class OllamaClient:
                     if event.get("error"):
                         raise GenerationFailure("provider_stream_error", str(event["error"]), retryable=True)
                     message = event.get("message") or {}
+                    # Ollama may return a separate `thinking` field. Only `content` is
+                    # surfaced as delivery text or persisted by the canonical runtime.
                     text = message.get("content")
                     if isinstance(text, str) and text:
                         now = time.monotonic_ns()

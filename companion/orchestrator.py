@@ -54,8 +54,14 @@ def detect_explicit_command(text: str) -> tuple[str, str] | None:
     )
     if remember_prefix:
         return "remember", remember_prefix.group(1).strip()
-    if re.search(r"(?:忘れておいて|忘れといて|忘れてください|忘れて|消して|forget\s+(?:this|that))[\s。.!！?？]*$", stripped, re.I):
-        return "forget", ""
+    forget_suffix = re.search(
+        r"^(?P<target>.*?)(?:のこと)?(?:を|は)?\s*(?:忘れておいて|忘れといて|忘れてください|忘れて|消して|forget\s+(?:this|that))[\s。.!！?？]*$",
+        stripped,
+        re.I | re.S,
+    )
+    if forget_suffix:
+        target = forget_suffix.group("target").strip()
+        return "forget", target
     if re.search(r"(?:覚えておいて|覚えといて|覚えてください|覚えてね|記憶してください|記憶して|覚えて|remember\s+(?:this|that))[\s。.!！?？]*$", stripped, re.I):
         return "remember", ""
     return None
@@ -108,11 +114,15 @@ class ConversationRuntime:
             marker = None
             if detected:
                 kind, target_text = detected
-                marker = self.repository.save_explicit_command_marker(
-                    turn["turn_id"], kind, True, target_text, turn["state_revision"]
-                )
-                if marker:
-                    marker["resolution_status"] = "not_found" if kind == "forget" else "resolved"
+                if kind == "forget":
+                    marker = self.repository.resolve_and_apply_explicit_forget(
+                        turn["turn_id"], target_text, self.config.retrieval_candidate_limit
+                    )
+                    turn["state_revision"] = marker["state_revision"]
+                else:
+                    marker = self.repository.save_explicit_command_marker(
+                        turn["turn_id"], kind, True, target_text, turn["state_revision"]
+                    )
             session = ActiveTurn(turn=turn, command_marker=marker)
             with self._active_lock:
                 self._active[turn["turn_id"]] = session

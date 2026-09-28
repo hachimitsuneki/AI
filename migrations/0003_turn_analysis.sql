@@ -40,5 +40,3 @@ CREATE TABLE IF NOT EXISTS ANALYSIS_COMMIT (
     mutation_summary_json TEXT NOT NULL,
     committed_at TEXT NOT NULL
 );
-
-\n

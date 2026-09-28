@@ -322,6 +322,7 @@ class TurnAnalysisService:
             turn = conn.execute(
                 """SELECT tr.*, c.ai_identity_id, c.user_profile_id, c.id AS conversation_id,
                           user.id AS current_user_id, user.content AS current_user_text,
+                          user.created_at AS current_user_created_at,
                           assistant.id AS assistant_id, assistant.content AS assistant_text,
                           assistant.status AS assistant_status
                    FROM TURN_RUN tr JOIN CONVERSATION c ON c.id = tr.conversation_id
@@ -334,12 +335,28 @@ class TurnAnalysisService:
                 raise KeyError(f"unknown turn: {turn_id}")
             if turn["status"] not in {"completed", "completed_partial", "failed_before_delivery", "cancelled"}:
                 raise RuntimeError("analysis requires a terminal turn")
+            turn_message_ids = [turn["current_user_id"]]
+            if turn["assistant_id"]:
+                turn_message_ids.append(turn["assistant_id"])
+            placeholders = ",".join("?" for _ in turn_message_ids)
+            forgotten_turn_source = conn.execute(
+                f"""SELECT 1 FROM MEMORY_EVIDENCE evidence
+                    JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                    WHERE evidence.message_id IN ({placeholders}) AND mi.status = 'soft_deleted' LIMIT 1""",
+                turn_message_ids,
+            ).fetchone()
+            suppressed_source_ids = turn_message_ids if forgotten_turn_source else []
             state_revision = int(conn.execute("SELECT value FROM APP_META WHERE key = 'state_revision'").fetchone()["value"])
             command_row = conn.execute(
                 """SELECT payload FROM TURN_EVENT_TRACE WHERE turn_run_id = ?
                    AND event_type = 'ExplicitCommandDetected' ORDER BY sequence DESC LIMIT 1""",
                 (turn_id,),
             ).fetchone()
+            command_context = json.loads(command_row["payload"]) if command_row else {
+                "explicit_remember": False, "kind": None, "resolution_status": None
+            }
+            if command_context.get("kind") == "forget":
+                suppressed_source_ids = list(dict.fromkeys([*suppressed_source_ids, *turn_message_ids]))
             retrieval = conn.execute(
                 "SELECT id FROM RETRIEVAL_RUN WHERE turn_run_id = ? ORDER BY created_at DESC LIMIT 1",
                 (turn_id,),
@@ -357,6 +374,7 @@ class TurnAnalysisService:
                     (retrieval["id"], turn["ai_identity_id"]),
                 ).fetchall()
             raw_user = turn["current_user_text"]
+            current_user_suppressed = turn["current_user_id"] in suppressed_source_ids
             assistant_status = turn["assistant_status"]
             assistant_delivery_status = (
                 "none" if not turn["assistant_id"] else
@@ -368,16 +386,19 @@ class TurnAnalysisService:
             assistant = {
                 "message_id": turn["assistant_id"],
                 "status": assistant_delivery_status,
-                "content": redact_secrets(turn["assistant_text"] or ""),
+                "content": "[forgotten source suppressed]" if turn["assistant_id"] in suppressed_source_ids else redact_secrets(turn["assistant_text"] or ""),
             }
             current_user = {
                 "message_id": turn["current_user_id"],
                 "speaker": "user",
-                "source_class": "direct_user",
-                "content": redact_secrets(raw_user),
+                "source_class": "suppressed" if current_user_suppressed else "direct_user",
+                "content": "[forget command target omitted]" if command_context.get("kind") == "forget" else "[forgotten source suppressed]" if current_user_suppressed else redact_secrets(raw_user),
             }
         recent_rows = self.repository.recent_messages(
-            turn["conversation_id"], turn["current_user_id"], limit=8
+            turn["conversation_id"],
+            turn["current_user_id"],
+            limit=8,
+            before_created_at=turn["current_user_created_at"],
         )
         recent = [
             {
@@ -389,16 +410,13 @@ class TurnAnalysisService:
             for message in recent_rows
         ]
         learned = self.repository.learned_context(turn["ai_identity_id"], turn["user_profile_id"])
-        allowed_message_ids = [current_user["message_id"]]
-        if assistant["message_id"]:
+        allowed_message_ids = [] if current_user["message_id"] in suppressed_source_ids else [current_user["message_id"]]
+        if assistant["message_id"] and assistant["message_id"] not in suppressed_source_ids:
             allowed_message_ids.append(assistant["message_id"])
         allowed_message_ids.extend(message["message_id"] for message in recent)
         memories = [
             {**dict(row), "summary": redact_secrets(row["summary"])} for row in memory_rows
         ]
-        command_context = json.loads(command_row["payload"]) if command_row else {
-            "explicit_remember": False, "kind": None, "resolution_status": None
-        }
         return {
             "schema_version": "turn-analysis-input-v1",
             "turn_id": turn_id,
@@ -413,7 +431,7 @@ class TurnAnalysisService:
             "explicit_command_context": command_context,
             "allowed_message_ids": list(dict.fromkeys(allowed_message_ids)),
             "allowed_memory_ids": [memory["id"] for memory in memories],
-            "suppressed_source_ids": [],
+            "suppressed_source_ids": suppressed_source_ids,
         }
 
     def run(self, turn_id: str, cancel: threading.Event | None = None) -> dict[str, Any]:
@@ -523,7 +541,11 @@ class TurnAnalysisService:
 
         def consider(kind: str, items: list[dict[str, Any]]) -> None:
             for ordinal, item in enumerate(items):
-                reason = self._validate_references(kind, item, allow_messages, allow_memories, projection_snapshot, explicit_remember)
+                reason = (
+                    "explicit_forget_boundary"
+                    if snapshot["explicit_command_context"].get("kind") == "forget"
+                    else self._validate_references(kind, item, allow_messages, allow_memories, projection_snapshot, explicit_remember)
+                )
                 decisions.append({"type": kind, "ordinal": ordinal, "outcome": "accepted" if reason is None else "rejected", "reason_code": reason})
                 if reason is None:
                     accepted.append((kind, item))
@@ -533,12 +555,20 @@ class TurnAnalysisService:
         consider("user_observation", proposal["user_observations"])
         if proposal["appraisal_candidate"] is not None:
             item = proposal["appraisal_candidate"]
-            reason = self._validate_references("appraisal_candidate", item, allow_messages, allow_memories, projection_snapshot, explicit_remember)
+            reason = (
+                "explicit_forget_boundary"
+                if snapshot["explicit_command_context"].get("kind") == "forget"
+                else self._validate_references("appraisal_candidate", item, allow_messages, allow_memories, projection_snapshot, explicit_remember)
+            )
             decisions.append({"type": "appraisal_candidate", "ordinal": 0, "outcome": "accepted" if reason is None else "rejected", "reason_code": reason})
             if reason is None: accepted.append(("appraisal_candidate", item))
         if proposal["emotion_candidate"] is not None:
             item = proposal["emotion_candidate"]
-            reason = self._validate_references("emotion_candidate", item, allow_messages, allow_memories, projection_snapshot, explicit_remember)
+            reason = (
+                "explicit_forget_boundary"
+                if snapshot["explicit_command_context"].get("kind") == "forget"
+                else self._validate_references("emotion_candidate", item, allow_messages, allow_memories, projection_snapshot, explicit_remember)
+            )
             decisions.append({"type": "emotion_candidate", "ordinal": 0, "outcome": "accepted" if reason is None else "rejected", "reason_code": reason})
             if reason is None: accepted.append(("emotion_candidate", item))
         consider("relationship_signal", proposal["relationship_signals"])
@@ -634,6 +664,13 @@ class TurnAnalysisService:
                 if not (row["speaker"] == "user" and row["status"] == "committed" or
                         row["speaker"] == "assistant" and row["status"] in {"delivery_partial", "delivered"}):
                     return "evidence_not_canonical"
+                if conn.execute(
+                    """SELECT 1 FROM MEMORY_EVIDENCE evidence
+                       JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                       WHERE evidence.message_id = ? AND mi.status = 'soft_deleted' LIMIT 1""",
+                    (message_id,),
+                ).fetchone():
+                    return "forgotten_source_not_visible"
             if kind == "memory_candidate":
                 relation = item["relation_to_existing"]
                 memory_id = relation["memory_id"]
@@ -709,13 +746,33 @@ class TurnAnalysisService:
             return 1
         if action == "uncertain":
             return 0
-        if action in {"corrects", "changes_over_time", "clarifies", "contradicts"} and existing_id:
+        if action == "contradicts" and existing_id:
+            old = conn.execute("SELECT status FROM MEMORY_ITEM WHERE id = ?", (existing_id,)).fetchone()
+            if old and old["status"] == "active":
+                for message_id in evidence_ids:
+                    conn.execute(
+                        """INSERT INTO MEMORY_EVIDENCE
+                           (id, memory_item_id, message_id, evidence_type, support_weight)
+                           VALUES (?, ?, ?, 'counterevidence', ?)""",
+                        (new_id(), existing_id, message_id, .75 if item["explicitness"] == "direct" else .35),
+                    )
+                return 1
+            return 0
+        if action in {"corrects", "changes_over_time", "clarifies"} and existing_id:
             old = conn.execute("SELECT summary, status FROM MEMORY_ITEM WHERE id = ?", (existing_id,)).fetchone()
             if old and old["status"] == "active":
                 conn.execute("UPDATE MEMORY_ITEM SET status = 'superseded' WHERE id = ?", (existing_id,))
                 conn.execute(
                     "UPDATE MEMORY_CLAIM SET claim_status = 'historical', valid_to = ? WHERE memory_item_id = ?",
                     (timestamp, existing_id),
+                )
+                conn.execute(
+                    """UPDATE USER_MODEL_ITEM
+                       SET status = 'superseded', valid_to = COALESCE(valid_to, ?), updated_at = ?
+                       WHERE id IN (
+                         SELECT user_model_item_id FROM USER_MODEL_EVIDENCE WHERE memory_claim_id = ?
+                       ) AND status IN ('active', 'current', 'confirmed')""",
+                    (timestamp, timestamp, existing_id),
                 )
                 conn.execute(
                     """INSERT INTO MEMORY_REVISION
@@ -894,11 +951,12 @@ class TurnAnalysisService:
                 (dimension_id, relationship_id, item["dimension"], value, timestamp),
             )
         signal_id = new_id()
+        source_message_id = item["evidence_message_ids"][0] if item["evidence_message_ids"] else None
         conn.execute(
             """INSERT INTO RELATIONSHIP_SIGNAL
-               (id, relationship_id, signal_type, strength, reason, observed_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (signal_id, relationship_id, f"{item['dimension']}_{item['direction']}", delta, item["reason"], timestamp),
+               (id, relationship_id, signal_type, strength, reason, observed_at, source_message_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (signal_id, relationship_id, f"{item['dimension']}_{item['direction']}", delta, item["reason"], timestamp, source_message_id),
         )
         conn.execute(
             """INSERT INTO RELATIONSHIP_DIMENSION_EVIDENCE

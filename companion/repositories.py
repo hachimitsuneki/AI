@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Iterable
@@ -83,27 +84,27 @@ class RuntimeRepository:
                 """SELECT id, category, subject, value, confidence, status
                    FROM SELF_MODEL_ITEM WHERE ai_identity_id = ?
                      AND status IN ('active', 'current', 'confirmed')
-                   ORDER BY confidence DESC, valid_from DESC LIMIT 8""",
+                   ORDER BY confidence DESC, valid_from DESC""",
                 (ai_identity_id,),
             ).fetchall()
             self_hypotheses = conn.execute(
                 """SELECT id, category, subject, statement AS value, confidence, status
                    FROM SELF_HYPOTHESIS WHERE ai_identity_id = ? AND status IN ('active', 'hypothesis')
-                   ORDER BY confidence DESC, created_at DESC LIMIT 8""",
+                   ORDER BY confidence DESC, created_at DESC""",
                 (ai_identity_id,),
             ).fetchall()
             user_rows = conn.execute(
                 """SELECT id, category, subject, value, confidence, temporal_scope, status
                    FROM USER_MODEL_ITEM WHERE user_profile_id = ?
                      AND status IN ('active', 'current', 'confirmed')
-                   ORDER BY confidence DESC, updated_at DESC LIMIT 8""",
+                   ORDER BY confidence DESC, updated_at DESC""",
                 (user_profile_id,),
             ).fetchall()
             user_hypotheses = conn.execute(
                 """SELECT id, category, subject, statement AS value, confidence, status
                    FROM USER_HYPOTHESIS WHERE user_profile_id = ?
                      AND status IN ('active', 'hypothesis')
-                   ORDER BY confidence DESC, created_at DESC LIMIT 8""",
+                   ORDER BY confidence DESC, created_at DESC""",
                 (user_profile_id,),
             ).fetchall()
             relationship_rows = conn.execute(
@@ -114,24 +115,109 @@ class RuntimeRepository:
                 (ai_identity_id, user_profile_id),
             ).fetchall()
             self_items = [dict(row) for row in self_rows]
+            self_items = [item for item in self_items if self._derived_item_visible(conn, "self_model", item["id"])]
             known_self_ids = {row["id"] for row in self_items}
             self_items.extend(
                 {**dict(row), "status": "hypothesis"}
                 for row in self_hypotheses
-                if row["id"] not in known_self_ids
+                if row["id"] not in known_self_ids and self._derived_item_visible(conn, "self_hypothesis", row["id"])
             )
-            user_items = [dict(row) for row in user_rows]
+            user_items = [dict(row) for row in user_rows if self._derived_item_visible(conn, "user_model", row["id"])]
             known_user_ids = {row["id"] for row in user_items}
             user_items.extend(
                 {**dict(row), "status": "hypothesis"}
                 for row in user_hypotheses
-                if row["id"] not in known_user_ids
+                if row["id"] not in known_user_ids and self._derived_item_visible(conn, "user_hypothesis", row["id"])
             )
             return {
                 "learned_self": self_items[:8],
                 "user_model": user_items[:8],
-                "relationship": [dict(row) for row in relationship_rows],
+                "relationship": [dict(row) for row in relationship_rows if self._derived_item_visible(conn, "relationship", row["id"])],
             }
+
+    @staticmethod
+    def _turn_message_ids(conn: sqlite3.Connection, message_id: str) -> list[str]:
+        turn = conn.execute(
+            "SELECT user_message_id, assistant_message_id FROM TURN_RUN WHERE user_message_id = ? OR assistant_message_id = ?",
+            (message_id, message_id),
+        ).fetchone()
+        return [value for value in (turn["user_message_id"], turn["assistant_message_id"]) if value] if turn else [message_id]
+
+    @classmethod
+    def _messages_have_visible_memory(cls, conn: sqlite3.Connection, message_ids: list[str]) -> bool:
+        placeholders = ",".join("?" for _ in message_ids)
+        rows = conn.execute(
+            f"""SELECT mi.status FROM MEMORY_EVIDENCE me JOIN MEMORY_ITEM mi ON mi.id = me.memory_item_id
+                WHERE me.message_id IN ({placeholders})""",
+            message_ids,
+        ).fetchall()
+        return not rows or any(row["status"] != "soft_deleted" for row in rows)
+
+    @classmethod
+    def _observation_sources_visible(cls, conn: sqlite3.Connection, observation_ids: list[str]) -> bool:
+        if not observation_ids:
+            return True
+        for observation_id in observation_ids:
+            row = conn.execute(
+                "SELECT source_message_id FROM SELF_OBSERVATION WHERE id = ?", (observation_id,)
+            ).fetchone()
+            if not row:
+                continue
+            if cls._messages_have_visible_memory(conn, cls._turn_message_ids(conn, row["source_message_id"])):
+                return True
+        return False
+
+    @classmethod
+    def _derived_item_visible(cls, conn: sqlite3.Connection, kind: str, item_id: str) -> bool:
+        if kind == "self_model":
+            rows = conn.execute(
+                "SELECT self_observation_id FROM SELF_MODEL_EVIDENCE WHERE self_model_item_id = ?", (item_id,)
+            ).fetchall()
+            return cls._observation_sources_visible(conn, [row["self_observation_id"] for row in rows])
+        if kind == "self_hypothesis":
+            rows = conn.execute(
+                "SELECT self_observation_id FROM HYPOTHESIS_EVIDENCE WHERE self_hypothesis_id = ?", (item_id,)
+            ).fetchall()
+            return cls._observation_sources_visible(conn, [row["self_observation_id"] for row in rows])
+        if kind == "user_model":
+            rows = conn.execute(
+                """SELECT mi.status AS memory_status, mc.claim_status
+                   FROM USER_MODEL_EVIDENCE ume
+                   JOIN MEMORY_CLAIM mc ON mc.memory_item_id = ume.memory_claim_id
+                   JOIN MEMORY_ITEM mi ON mi.id = mc.memory_item_id
+                   WHERE ume.user_model_item_id = ?""",
+                (item_id,),
+            ).fetchall()
+            return not rows or any(
+                row["memory_status"] not in {"soft_deleted", "superseded"}
+                and row["claim_status"] != "historical"
+                for row in rows
+            )
+        if kind == "user_hypothesis":
+            rows = conn.execute(
+                """SELECT mi.status FROM USER_HYPOTHESIS_EVIDENCE uhe
+                   JOIN MEMORY_ITEM mi ON mi.id = uhe.memory_item_id
+                   WHERE uhe.user_hypothesis_id = ?""",
+                (item_id,),
+            ).fetchall()
+            return not rows or any(row["status"] != "soft_deleted" for row in rows)
+        if kind == "relationship":
+            rows = conn.execute(
+                """SELECT rs.source_message_id FROM RELATIONSHIP_DIMENSION_EVIDENCE rde
+                   JOIN RELATIONSHIP_SIGNAL rs ON rs.id = rde.relationship_signal_id
+                   WHERE rde.relationship_dimension_id = ?""",
+                (item_id,),
+            ).fetchall()
+            if not rows:
+                return True
+            for row in rows:
+                source_message_id = row["source_message_id"]
+                if not source_message_id:
+                    return True
+                if cls._messages_have_visible_memory(conn, [source_message_id]):
+                    return True
+            return False
+        return True
 
     def create_turn(self, user_text: str, reply_to_message_id: str | None = None) -> dict[str, Any]:
         timestamp = now_iso()
@@ -541,7 +627,29 @@ class RuntimeRepository:
                     row = conn.execute(
                         """SELECT id FROM MESSAGE WHERE id = ?
                            AND (speaker = 'user' AND status = 'committed'
-                                OR speaker = 'assistant' AND status IN ('delivering', 'delivery_partial', 'delivered'))""",
+                                OR speaker = 'assistant' AND status IN ('delivering', 'delivery_partial', 'delivered'))
+                           AND NOT EXISTS (
+                               SELECT 1 FROM MEMORY_EVIDENCE evidence
+                               JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                               WHERE evidence.message_id = MESSAGE.id AND mi.status = 'soft_deleted'
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1 FROM TURN_RUN source_turn
+                               JOIN MEMORY_EVIDENCE evidence
+                                 ON evidence.message_id IN (source_turn.user_message_id, source_turn.assistant_message_id)
+                               JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                               WHERE (source_turn.user_message_id = MESSAGE.id
+                                      OR source_turn.assistant_message_id = MESSAGE.id)
+                                 AND mi.status = 'soft_deleted'
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1 FROM TURN_RUN command_turn
+                               JOIN TURN_EVENT_TRACE command_event ON command_event.turn_run_id = command_turn.id
+                               WHERE (command_turn.user_message_id = MESSAGE.id
+                                      OR command_turn.assistant_message_id = MESSAGE.id)
+                                 AND command_event.event_type = 'ExplicitCommandDetected'
+                                 AND command_event.payload LIKE '%"kind":"forget"%'
+                           )""",
                         (source["source_ref"],),
                     ).fetchone()
                 else:
@@ -977,15 +1085,49 @@ class RuntimeRepository:
                 "has_newer": len(newer) > bounded_radius,
             }
 
-    def recent_messages(self, conversation_id: str, exclude_message_id: str, limit: int = 12) -> list[dict[str, Any]]:
+    def recent_messages(
+        self,
+        conversation_id: str,
+        exclude_message_id: str,
+        limit: int = 12,
+        before_created_at: str | None = None,
+    ) -> list[dict[str, Any]]:
         with self.db.session() as conn:
+            time_filter = " AND created_at < ?" if before_created_at is not None else ""
+            parameters: list[Any] = [conversation_id, exclude_message_id]
+            if before_created_at is not None:
+                parameters.append(before_created_at)
+            parameters.append(limit)
             rows = conn.execute(
-                """SELECT id, speaker, content, status, created_at FROM MESSAGE
+                f"""SELECT id, speaker, content, status, created_at FROM MESSAGE
                    WHERE conversation_id = ? AND id <> ?
+                     {time_filter}
                      AND (speaker = 'user' AND status = 'committed'
                           OR speaker = 'assistant' AND status IN ('delivery_partial', 'delivered'))
+                     AND NOT EXISTS (
+                       SELECT 1 FROM MEMORY_EVIDENCE evidence
+                       JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                       WHERE evidence.message_id = MESSAGE.id AND mi.status = 'soft_deleted'
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM TURN_RUN source_turn
+                       JOIN MEMORY_EVIDENCE evidence
+                         ON evidence.message_id IN (source_turn.user_message_id, source_turn.assistant_message_id)
+                       JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                       WHERE (source_turn.user_message_id = MESSAGE.id
+                              OR source_turn.assistant_message_id = MESSAGE.id)
+                         AND mi.status = 'soft_deleted'
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM TURN_RUN command_turn
+                       JOIN TURN_EVENT_TRACE command_event ON command_event.turn_run_id = command_turn.id
+                       WHERE (command_turn.user_message_id = MESSAGE.id
+                              OR command_turn.assistant_message_id = MESSAGE.id)
+                         AND command_event.event_type = 'ExplicitCommandDetected'
+                         AND command_event.payload LIKE '%"kind":"forget"%'
+                     )
                    ORDER BY created_at DESC, id DESC LIMIT ?""",
-                (conversation_id, exclude_message_id, limit),
+                parameters,
             ).fetchall()
             return [dict(row) for row in reversed(rows)]
 
@@ -998,6 +1140,26 @@ class RuntimeRepository:
                    WHERE c.ai_identity_id = ? AND c.user_profile_id = ? AND m.content <> ''
                      AND (m.speaker = 'user' AND m.status = 'committed'
                           OR m.speaker = 'assistant' AND m.status IN ('delivering', 'delivery_partial', 'delivered'))
+                     AND NOT EXISTS (
+                       SELECT 1 FROM MEMORY_EVIDENCE evidence
+                       JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                       WHERE evidence.message_id = m.id AND mi.status = 'soft_deleted'
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM TURN_RUN source_turn
+                       JOIN MEMORY_EVIDENCE evidence
+                         ON evidence.message_id IN (source_turn.user_message_id, source_turn.assistant_message_id)
+                       JOIN MEMORY_ITEM mi ON mi.id = evidence.memory_item_id
+                       WHERE (source_turn.user_message_id = m.id OR source_turn.assistant_message_id = m.id)
+                         AND mi.status = 'soft_deleted'
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM TURN_RUN command_turn
+                       JOIN TURN_EVENT_TRACE command_event ON command_event.turn_run_id = command_turn.id
+                       WHERE (command_turn.user_message_id = m.id OR command_turn.assistant_message_id = m.id)
+                         AND command_event.event_type = 'ExplicitCommandDetected'
+                         AND command_event.payload LIKE '%"kind":"forget"%'
+                     )
                    ORDER BY m.created_at DESC, m.id DESC LIMIT ?""",
                 (ai_identity_id, user_profile_id, limit),
             ).fetchall()
@@ -1151,7 +1313,11 @@ class RuntimeRepository:
     ) -> dict[str, Any] | None:
         if not explicit:
             return None
+        command_id = new_id()
         with self.db.transaction() as conn:
+            turn = conn.execute("SELECT id FROM TURN_RUN WHERE id = ?", (turn_id,)).fetchone()
+            if not turn:
+                raise KeyError(f"unknown turn: {turn_id}")
             event_id = self.emit_event(
                 conn,
                 turn_id,
@@ -1161,9 +1327,10 @@ class RuntimeRepository:
                 "durable",
                 {
                     "schema_version": "explicit-command-v1",
-                    "command_id": "CMD_REMEMBER" if kind == "remember" else "CMD_FORGET",
+                    "command_id": command_id,
+                    "turn_id": turn_id,
                     "kind": kind,
-                    "resolution_status": "not_found" if kind == "forget" else "resolved",
+                    "resolution_status": "resolved" if kind == "remember" else "not_found",
                     "target_refs": [],
                     "resolution_basis": "none",
                     "created_state_revision": state_revision,
@@ -1171,7 +1338,177 @@ class RuntimeRepository:
                     "mutation_applied": False,
                 },
             )
-        return {"event_id": event_id, "kind": kind}
+        return {
+            "event_id": event_id,
+            "command_id": command_id,
+            "turn_id": turn_id,
+            "kind": kind,
+            "resolution_status": "resolved" if kind == "remember" else "not_found",
+            "target_refs": [],
+            "resolution_basis": "none",
+            "mutation_applied": False,
+        }
+
+    def resolve_and_apply_explicit_forget(
+        self, turn_id: str, target_text: str, candidate_limit: int = 500
+    ) -> dict[str, Any]:
+        """Resolve an explicit forget deterministically and commit marker + deletion atomically."""
+        command_id = new_id()
+        timestamp = now_iso()
+        with self.db.transaction() as conn:
+            turn = conn.execute(
+                """SELECT tr.id, tr.conversation_id, c.ai_identity_id
+                   FROM TURN_RUN tr JOIN CONVERSATION c ON c.id = tr.conversation_id
+                   WHERE tr.id = ?""",
+                (turn_id,),
+            ).fetchone()
+            if not turn:
+                raise KeyError(f"unknown turn: {turn_id}")
+            current_revision = int(
+                conn.execute("SELECT value FROM APP_META WHERE key = 'state_revision'").fetchone()["value"]
+            )
+            rows = conn.execute(
+                """SELECT mi.id, mi.summary, mi.status, mi.retention_class,
+                          mc.subject_type, mc.predicate, mc.object_value
+                   FROM MEMORY_ITEM mi
+                   LEFT JOIN MEMORY_CLAIM mc ON mc.memory_item_id = mi.id
+                   WHERE mi.ai_identity_id = ? AND mi.status <> 'soft_deleted'
+                     AND COALESCE(mi.retention_class, '') NOT IN ('secret', 'credential')
+                     AND EXISTS (
+                       SELECT 1 FROM MEMORY_EVIDENCE me JOIN MESSAGE source ON source.id = me.message_id
+                       WHERE me.memory_item_id = mi.id
+                         AND (source.speaker = 'user' AND source.status = 'committed'
+                              OR source.speaker = 'assistant'
+                                 AND source.status IN ('delivery_partial', 'delivered'))
+                     )
+                   ORDER BY CASE mi.status WHEN 'active' THEN 0 WHEN 'archived' THEN 1 ELSE 2 END,
+                            mi.importance DESC, mi.created_at DESC LIMIT ?""",
+                (turn["ai_identity_id"], max(1, min(500, candidate_limit))),
+            ).fetchall()
+            candidates = [dict(row) for row in rows]
+            matched_ids, basis = self._resolve_forget_candidates(target_text, candidates)
+            if len(matched_ids) == 1:
+                resolution_status = "resolved"
+                mutation_applied = True
+                target_id = matched_ids[0]
+                updated = conn.execute(
+                    "UPDATE MEMORY_ITEM SET status = 'soft_deleted' WHERE id = ? AND status <> 'soft_deleted'",
+                    (target_id,),
+                ).rowcount
+                if updated != 1:
+                    # A concurrent privacy transition wins. Record no successful target and do not retry by guess.
+                    resolution_status = "not_found"
+                    mutation_applied = False
+                    matched_ids = []
+                    basis = "none"
+                else:
+                    conn.execute(
+                        """INSERT INTO MEMORY_LIFECYCLE_EVENT
+                           (id, memory_item_id, event_type, actor_type, reason_type, reason, created_at)
+                           VALUES (?, ?, 'SOFT_DELETED', 'user', 'explicit_forget', 'User requested forget.', ?)""",
+                        (new_id(), target_id, timestamp),
+                    )
+                    current_revision += 1
+                    conn.execute("UPDATE APP_META SET value = ? WHERE key = 'state_revision'", (str(current_revision),))
+            elif len(matched_ids) > 1:
+                resolution_status = "ambiguous"
+                mutation_applied = False
+                basis = "none"
+            else:
+                resolution_status = "ambiguous" if candidates and self._is_vague_forget_target(target_text) else "not_found"
+                mutation_applied = False
+                basis = "none"
+            target_refs = [{"source_kind": "memory_item", "source_ref": memory_id} for memory_id in matched_ids] if resolution_status == "resolved" else []
+            payload = {
+                "schema_version": "explicit-command-v1",
+                "command_id": command_id,
+                "turn_id": turn_id,
+                "kind": "forget",
+                "resolution_status": resolution_status,
+                "target_refs": target_refs,
+                "resolution_basis": basis if resolution_status == "resolved" else "none",
+                "created_state_revision": current_revision - (1 if mutation_applied else 0),
+                "explicit_remember": False,
+                "mutation_applied": mutation_applied,
+            }
+            event_id = self.emit_event(
+                conn,
+                turn_id,
+                "ExplicitCommandDetected",
+                "CMP-ORCH-01",
+                "canonical",
+                "durable",
+                payload,
+            )
+        return {**payload, "event_id": event_id, "state_revision": current_revision}
+
+    @staticmethod
+    def _normalize_forget_text(value: str) -> str:
+        return re.sub(r"[\s、。.!！?？:：,，「」『』\"'()（）\[\]{}]", "", value).casefold()
+
+    @classmethod
+    def _is_vague_forget_target(cls, target_text: str) -> bool:
+        normalized = cls._normalize_forget_text(target_text)
+        return normalized in {"", "これ", "それ", "あれ", "この話", "その話", "あの話", "このこと", "そのこと", "あのこと", "this", "that"}
+
+    @classmethod
+    def _resolve_forget_candidates(
+        cls, target_text: str, candidates: list[dict[str, Any]]
+    ) -> tuple[list[str], str]:
+        target = cls._normalize_forget_text(target_text)
+        if not target or cls._is_vague_forget_target(target_text):
+            return [], "none"
+        exact: list[str] = []
+        for candidate in candidates:
+            content = " ".join(
+                str(candidate.get(key) or "")
+                for key in ("summary", "subject_type", "predicate", "object_value")
+            )
+            normalized_content = cls._normalize_forget_text(content)
+            if target == cls._normalize_forget_text(str(candidate["id"])) or target in normalized_content:
+                exact.append(candidate["id"])
+        if exact:
+            return list(dict.fromkeys(exact)), "explicit_id_or_reference"
+
+        terms = cls._forget_terms(target_text)
+        if not terms:
+            return [], "none"
+        scored: list[tuple[str, float]] = []
+        for candidate in candidates:
+            content = " ".join(
+                str(candidate.get(key) or "")
+                for key in ("summary", "subject_type", "predicate", "object_value")
+            )
+            content_terms = cls._forget_terms(content)
+            overlap = terms & content_terms
+            if overlap:
+                score = len(overlap) / len(terms)
+                if cls._normalize_forget_text(target_text) in cls._normalize_forget_text(content):
+                    score += 1.0
+                scored.append((candidate["id"], score))
+        if not scored:
+            return [], "none"
+        scored.sort(key=lambda value: (-value[1], value[0]))
+        top_score = scored[0][1]
+        tied = [memory_id for memory_id, score in scored if score == top_score]
+        return (tied, "unique_retrieval_match") if len(tied) == 1 else (tied, "none")
+
+    @classmethod
+    def _forget_terms(cls, text: str) -> set[str]:
+        terms: set[str] = set()
+        ignored = {"この", "その", "あの", "これ", "それ", "あれ", "話", "こと", "もの", "this", "that", "the"}
+        for match in re.finditer(r"[A-Za-z0-9_]+|[\u3040-\u30ff\u3400-\u9fff]+", text.casefold()):
+            token = match.group(0)
+            if token in ignored:
+                continue
+            if re.fullmatch(r"[\u3040-\u30ff\u3400-\u9fff]+", token):
+                if len(token) == 1:
+                    terms.add(token)
+                else:
+                    terms.update(token[index : index + 2] for index in range(len(token) - 1))
+            elif len(token) > 1:
+                terms.add(token)
+        return terms
 
     def turn_trace(self, turn_id: str) -> dict[str, Any]:
         with self.db.session() as conn:

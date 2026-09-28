@@ -175,10 +175,16 @@ class ContextBuilder:
                 "already been stored or promise durable recall before that processing completes."
             )
         elif command_marker and command_marker["kind"] == "forget":
-            dialogue_rules += (
-                "\nThe forget request did not resolve to one stored memory and made no change. "
-                "Do not claim anything was deleted; ask which target they mean if useful."
-            )
+            if command_marker.get("resolution_status") == "resolved" and command_marker.get("mutation_applied"):
+                dialogue_rules += (
+                    "\nThe requested stored memory has already been forgotten. Acknowledge completion briefly. "
+                    "Do not repeat or infer the forgotten content."
+                )
+            else:
+                dialogue_rules += (
+                    "\nThe forget request did not resolve to one stored memory and made no change. "
+                    "Do not claim anything was deleted; ask which target they mean if useful."
+                )
         hard_text = "\n".join(f"- {rule}" for rule in HARD_RULES)
         static_text = "\n\n".join(
             (
@@ -192,6 +198,13 @@ class ContextBuilder:
             )
         )
         current_text = current["content"]
+        if (
+            command_marker
+            and command_marker.get("kind") == "forget"
+            and command_marker.get("resolution_status") == "resolved"
+            and command_marker.get("mutation_applied")
+        ):
+            current_text = "The user asked to forget a stored memory. It was deleted; acknowledge briefly without restating the target."
         mandatory_tokens = self.token_estimator(static_text) + self.token_estimator(current_text) + 4
         if mandatory_tokens > self.config.context_budget_tokens:
             raise CriticalContextError(
