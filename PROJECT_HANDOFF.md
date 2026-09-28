@@ -4,6 +4,9 @@
 - Canonical source version: `0.1-draft-handoff-2026-09-27-r16`
 - Updated: 2026-09-28 JST
 - Status: **WP-TXT-01〜06 + WP-TXT-06.5実装済み / WP-TXT-07〜08はfixture Golden検証済み / 実Ollama Analyzerは未検証**
+- Target branch: `codex/text-v01-p0`
+- Task implementation commit: `3c74754` (`Implement chat usability and semantic projection`); this handoff status is recorded in a following documentation-only commit.
+- Uncommitted changes after handoff: none
 
 > **重要:** このルートファイルはGit上の入口/索引です。元の約20万bytesの`PROJECT_HANDOFF.md r16`を要約して置換するものではありません。完全なr16本文は `docs/canonical/r16/` の19partを順番に読んでください。
 

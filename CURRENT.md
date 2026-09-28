@@ -7,6 +7,8 @@ Updated: 2026-09-28 (JST)
 - Repository: https://github.com/hachimitsuneki/AI
 - Target branch: `codex/text-v01-p0`
 - Baseline before this task: `e46228d1021296eae8e3a7734769326a1e0cd5db` (`Implement Text v0.1 foreground conversation slice`)
+- Task implementation commit: `3c74754` (`Implement chat usability and semantic projection`). A following documentation-only commit records this handoff status.
+- Uncommitted changes: none after the handoff documentation commit.
 - Scope in this task: WP-TXT-06.5 Chat Usability, then WP-TXT-07 Turn Analyzer and WP-TXT-08 Validator/Projector.
 - `PROJECT_HANDOFF.md` remains the top-level handoff entry point. This file holds the current status and verification evidence.
 - Read order: `AGENTS.md`, `agent.md`, `PROJECT_HANDOFF.md`, `docs/SPEC_REGISTRY.md`, `docs/canonical/r16/MANIFEST.md` and all parts in manifest order, `docs/TEXT_V01_IMPLEMENTATION_SPEC.md` and its four parts, `docs/TEXT_V01_READINESS_AUDIT.md`, `docs/ANALYZER_GOLDEN_SPEC.md`, `docs/RETRIEVAL_P0_SPEC.md`, then `CURRENT.md`.
