@@ -17,23 +17,31 @@
             <p id="connection-state">ローカル会話</p>
           </div>
         </div>
-        <div class="runtime-pill" id="runtime-profile" title="この端末だけで使う暫定実行プロファイル">
-          <span class="status-dot" id="provider-dot"></span>
-          <span id="model-label">接続を確認中</span>
-        </div>
+        <form id="search-form" class="search-form" role="search">
+          <label class="visually-hidden" for="history-search">会話履歴を検索</label>
+          <input id="history-search" type="search" maxlength="200" placeholder="会話を検索…">
+          <button type="submit">検索</button>
+        </form>
       </header>
 
-      <section class="conversation" aria-label="会話">
+      <section class="conversation" aria-label="会話" id="conversation">
+        <div class="search-results" id="search-results" hidden aria-live="polite"></div>
         <div class="welcome" id="welcome">
           <div class="welcome-icon" aria-hidden="true">✳</div>
           <h2>会話を始めましょう</h2>
           <p>メッセージはこの端末のローカルデータベースに保存されます。</p>
         </div>
+        <button class="history-button" id="load-older" type="button" hidden>以前のメッセージを読み込む</button>
         <div class="message-list" id="message-list" aria-live="polite"></div>
         <div class="turn-status" id="turn-status" role="status" aria-live="polite"></div>
+        <button class="latest-button" id="scroll-latest" type="button" hidden>最新のメッセージへ ↓</button>
       </section>
 
       <footer class="composer-area">
+        <div class="reply-preview" id="reply-preview" hidden>
+          <div><strong>返信先</strong><span id="reply-preview-text"></span></div>
+          <button id="clear-reply" type="button" aria-label="返信先を解除">×</button>
+        </div>
         <div class="composer">
           <label class="visually-hidden" for="message-input">メッセージ</label>
           <textarea id="message-input" rows="1" maxlength="20000" placeholder="メッセージを入力…" enterkeyhint="send"></textarea>

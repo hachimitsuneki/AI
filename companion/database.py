@@ -57,9 +57,31 @@ class Database:
             conn.close()
 
     def initialize(self, config: RuntimeConfig) -> None:
-        migration = Path(__file__).resolve().parent.parent / "migrations" / "0001_initial.sql"
+        migrations = Path(__file__).resolve().parent.parent / "migrations"
         with self.session() as conn:
-            conn.executescript(migration.read_text(encoding="utf-8"))
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS SCHEMA_MIGRATION (
+                    version TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )"""
+            )
+            applied = {
+                row["version"]
+                for row in conn.execute("SELECT version FROM SCHEMA_MIGRATION").fetchall()
+            }
+        for migration in sorted(migrations.glob("[0-9][0-9][0-9][0-9]_*.sql")):
+            version = migration.name.split("_", 1)[0]
+            if version in applied:
+                continue
+            # 0001 is idempotent and predates the migration ledger, so it also
+            # safely recognizes existing installations without replacing data.
+            with self.session() as conn:
+                conn.executescript(migration.read_text(encoding="utf-8"))
+            with self.transaction() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO SCHEMA_MIGRATION(version, applied_at) VALUES (?, ?)",
+                    (version, now_iso()),
+                )
         self.seed_defaults(config)
         self.recover_interrupted_turns()
 
@@ -72,17 +94,25 @@ class Database:
             user_id = new_id()
             conversation_id = new_id()
             identity = {
-                "summary": "A text conversation partner. Reply clearly, honestly, and considerately."
+                "summary": "A curious, playful digital companion; clear, honest, and considerate."
+            }
+            temperament = {
+                "curiosity": "somewhat high",
+                "playfulness": "somewhat high",
+                "assertiveness": "medium",
+                "mischievousness": "slight",
+                "humor": "occasional, situational",
             }
             conn.execute(
                 """INSERT INTO AI_IDENTITY
                    (id, name, entity_type, role, core_identity, temperament, created_at, updated_at)
-                   VALUES (?, ?, 'digital_companion', ?, ?, '{}', ?, ?)""",
+                   VALUES (?, ?, 'digital_companion', ?, ?, ?, ?, ?)""",
                 (
                     identity_id,
                     config.identity_name,
                     config.identity_role,
                     json.dumps(identity, ensure_ascii=False),
+                    json.dumps(temperament, ensure_ascii=False),
                     timestamp,
                     timestamp,
                 ),

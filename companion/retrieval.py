@@ -148,6 +148,7 @@ class Retriever:
         self.provider = provider
         self.config = config
         self.lexical_fn = lexical_fn
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="retrieval")
 
     def execute(
         self,
@@ -195,17 +196,30 @@ class Retriever:
         semantic_values: list[tuple[str, float]] = []
         lexical_error: str | None = None
         semantic_error: str | None = None
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="retrieval") as pool:
-            lexical_future = pool.submit(run_lexical)
-            semantic_future = pool.submit(run_semantic)
+        lexical_future = self._executor.submit(run_lexical)
+        semantic_future = self._executor.submit(run_semantic)
+        deadline = max(0.001, float(self.config.retrieval_foreground_deadline_seconds))
+        # Bound the foreground wait without shutting down a context-managed pool
+        # that would otherwise join a timed-out semantic request before returning.
+        from concurrent.futures import wait
+
+        wait((lexical_future, semantic_future), timeout=deadline)
+        if lexical_future.done():
             try:
                 lexical_values = lexical_future.result()
             except Exception:
                 lexical_error = "lexical_unavailable"
+        else:
+            lexical_future.cancel()
+            lexical_error = "lexical_timeout"
+        if semantic_future.done():
             try:
                 semantic_values = semantic_future.result()
             except Exception:
                 semantic_error = "semantic_unavailable"
+        else:
+            semantic_future.cancel()
+            semantic_error = "semantic_timeout"
         lexical_elapsed = int((time.monotonic_ns() - leg_started["lexical"]) / 1_000_000)
         semantic_elapsed = int((time.monotonic_ns() - leg_started["semantic"]) / 1_000_000)
 
@@ -302,7 +316,10 @@ class Retriever:
             "fusion_ms": 0,
             "total_ms": int((time.monotonic_ns() - started) / 1_000_000),
         }
-        profile_id = f"{request.retrieval_profile_id};rrf-k={self.config.retrieval_rrf_k};embedding={self.config.embedding_model}"
+        profile_id = (
+            f"{request.retrieval_profile_id};rrf-k={self.config.retrieval_rrf_k};"
+            f"embedding={self.config.embedding_model};foreground-deadline-s={deadline:g}"
+        )
         run_id = self.repository.save_retrieval(
             turn_id=turn["turn_id"],
             conversation_id=turn["conversation_id"],
@@ -347,7 +364,9 @@ class Retriever:
         cached = {f"{kind}:{ref}": vector for (kind, ref), vector in cached_by_ref.items()}
         missing_keys = [source_key for source_key in bounded if source_key not in cached]
         inputs = [query] + [bounded[source_key] for source_key in missing_keys]
-        vectors = self.provider.embed(inputs)
+        vectors = self.provider.embed(
+            inputs, timeout=self.config.retrieval_foreground_deadline_seconds
+        )
         if not vectors:
             return []
         query_vector = vectors[0]

@@ -71,7 +71,7 @@ class OllamaClient:
             method="POST",
         )
         try:
-            with self._opener.open(request, timeout=timeout or self.timeout) as response:
+            with self._opener.open(request, timeout=self.timeout if timeout is None else timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read(2048).decode("utf-8", errors="replace")
@@ -101,17 +101,54 @@ class OllamaClient:
                 "embedding_model": self.embedding_model,
             }
 
-    def embed(self, inputs: list[str]) -> list[list[float]]:
+    def embed(self, inputs: list[str], timeout: float | None = None) -> list[list[float]]:
         if not inputs:
             return []
         data = self._post_json(
             "/api/embed",
             {"model": self.embedding_model, "input": inputs, "truncate": True},
+            timeout=timeout,
         )
         embeddings = data.get("embeddings")
         if not isinstance(embeddings, list) or len(embeddings) != len(inputs):
             raise GenerationFailure("invalid_embedding_response", "Ollama returned an invalid embedding batch.")
         return [[float(value) for value in vector] for vector in embeddings]
+
+    def chat_json(
+        self,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+        cancel: Event,
+        *,
+        model: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        if cancel.is_set():
+            raise GenerationCancelled("analysis cancelled before provider request")
+        data = self._post_json(
+            "/api/chat",
+            {
+                "model": model or self.main_model,
+                "messages": messages,
+                "format": schema,
+                "stream": False,
+                "options": {"temperature": 0},
+            },
+            timeout=timeout,
+        )
+        if cancel.is_set():
+            raise GenerationCancelled("analysis cancelled before commit")
+        message = data.get("message") or {}
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise GenerationFailure("invalid_analysis_response", "Analyzer returned no JSON content.", retryable=True)
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise GenerationFailure("invalid_analysis_json", "Analyzer returned malformed JSON.", retryable=True) from exc
+        if not isinstance(result, dict):
+            raise GenerationFailure("invalid_analysis_json", "Analyzer output must be a JSON object.", retryable=True)
+        return result
 
     def stream_chat(
         self,

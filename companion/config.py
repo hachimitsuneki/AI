@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -18,7 +19,10 @@ class RuntimeConfig:
     retrieval_max_results: int
     retrieval_candidate_limit: int
     retrieval_rrf_k: int
+    retrieval_foreground_deadline_seconds: float
     request_timeout_seconds: float
+    analyzer_model: str
+    analyzer_timeout_seconds: float
     profile_id: str
     identity_name: str
     identity_role: str
@@ -28,6 +32,13 @@ def _integer(name: str, default: int, minimum: int = 1) -> int:
     value = int(os.environ.get(name, str(default)))
     if value < minimum:
         raise ValueError(f"{name} must be at least {minimum}")
+    return value
+
+
+def _seconds(name: str, default: float, minimum: float = 0.001) -> float:
+    value = float(os.environ.get(name, str(default)))
+    if not math.isfinite(value) or value < minimum:
+        raise ValueError(f"{name} must be at least {minimum} seconds")
     return value
 
 
@@ -48,7 +59,15 @@ def load_config() -> RuntimeConfig:
         retrieval_max_results=_integer("COMPANION_RETRIEVAL_MAX_RESULTS", 12),
         retrieval_candidate_limit=_integer("COMPANION_RETRIEVAL_CANDIDATE_LIMIT", 500),
         retrieval_rrf_k=_integer("COMPANION_RETRIEVAL_RRF_K", 60),
-        request_timeout_seconds=float(os.environ.get("COMPANION_REQUEST_TIMEOUT_SECONDS", "180")),
+        retrieval_foreground_deadline_seconds=_seconds(
+            "COMPANION_RETRIEVAL_FOREGROUND_DEADLINE_SECONDS", 2.0
+        ),
+        request_timeout_seconds=_seconds("COMPANION_REQUEST_TIMEOUT_SECONDS", 180.0),
+        analyzer_model=os.environ.get(
+            "COMPANION_ANALYZER_MODEL",
+            os.environ.get("COMPANION_MAIN_MODEL", "qwen3.5:2b-q4_K_M"),
+        ),
+        analyzer_timeout_seconds=_seconds("COMPANION_ANALYZER_TIMEOUT_SECONDS", 60.0),
         profile_id=os.environ.get("COMPANION_PROFILE_ID", "local-provisional-v1"),
         identity_name=os.environ.get("COMPANION_IDENTITY_NAME", "AI"),
         identity_role=os.environ.get("COMPANION_IDENTITY_ROLE", "digital companion"),

@@ -2,8 +2,8 @@
 
 - Project: 自立型AI / 継続人格型デジタルコンパニオン
 - Canonical source version: `0.1-draft-handoff-2026-09-27-r16`
-- Updated: 2026-09-27 JST
-- Status: **WP-TXT-01〜06実装済み / foreground 1ターン会話をローカル検証済み / WP-TXT-07以降は未着手**
+- Updated: 2026-09-28 JST
+- Status: **WP-TXT-01〜06 + WP-TXT-06.5実装済み / WP-TXT-07〜08はfixture Golden検証済み / 実Ollama Analyzerは未検証**
 
 > **重要:** このルートファイルはGit上の入口/索引です。元の約20万bytesの`PROJECT_HANDOFF.md r16`を要約して置換するものではありません。完全なr16本文は `docs/canonical/r16/` の19partを順番に読んでください。
 
@@ -42,12 +42,12 @@ Git化前に独立仕様書として存在した文書は、r16 handoffを含め
 
 ## Current implementation state
 
-- Text v0.1: **WP-TXT-01〜06を実装・ローカル検証済み / WP-TXT-07以降は未着手**
-- Application code: WP-TXT-01〜06実装済み。実行証拠と境界は [`CURRENT.md`](CURRENT.md) を参照
-- DB schema / migration: SQLite schema migrationを実装し、初期化・整合性を確認済み
-- automated test code: 実装済み。`CURRENT.md` に記載の9件が成功
-- model server deployment: ローカルOllama接続のみ確認。配備・ハードウェア計測は未実施
-- hardware benchmark: 未実施
+- Text v0.1: **WP-TXT-01〜06.5実装済み。WP-TXT-07〜08はP0 fixture GoldenとProjector経路を検証済み。実モデルによるAnalyzer意味投影は未確認。**
+- Application code: Chat usability, async Turn Analyzer, schema/reference/privacy Validator, atomic idempotent Projectorを追加。機能ごとの実装・実動・未確認範囲は [`CURRENT.md`](CURRENT.md) を参照
+- DB schema / migration: `0002_chat_usability.sql` and `0003_turn_analysis.sql` を追加。返信ID、turn analysis/proposal/commitを永続化
+- automated tests: bundled Python runtimeで24件成功。7 P0 Analyzer Goldensも全て成功
+- model server: ローカルOllama health確認は成功したが、実Analyzer呼出しは設定済み60秒timeout後に`provider_unavailable`。WP07/08は本番用モデル応答をまだ実証していない
+- hardware benchmark: 未実施。モデル/runtime tuningはしていない
 
 ## Implementation path and current position
 
@@ -62,12 +62,16 @@ WP-TXT-05 Gateway/Main streaming + WP-TXT-06 Delivery truth — implemented / lo
 ↓
 foreground: 1ターン普通に会話できるVertical Slice — implemented / live-verified
 ↓
-WP-TXT-07 Turn Analyzer + WP-TXT-08 Validator/Projector
+WP-TXT-06.5 Chat Usability — implemented / UI mostly live-verified
 ↓
-persistent Memory / Self / User / Relationship vertical slice
+WP-TXT-07 Turn Analyzer + WP-TXT-08 Validator/Projector — implemented / seven P0 fixture Goldens pass / real Analyzer model unverified
 ↓
-WP-TXT-09 Developer Inspector + WP-TXT-10 Golden Harness
+persistent Memory / Self / User / Relationship projector paths — fixture-backed Domain writes pass; real model projection unverified
+↓
+WP-TXT-09 Developer Inspector + WP-TXT-10 Golden Harness — not started
 ```
+
+現行position・browser evidence・失敗したOllama実行・未確認項目は [`CURRENT.md`](CURRENT.md) を先に参照する。Retrieval foreground deadlineの2秒はlocal provisional defaultであり、最終製品値ではない。Analyzer/Projectorのnumeric mappingsも`domain-projector-p0-provisional-v1`として記録された暫定値で、製品決定として固定しない。
 
 ## Non-negotiable boundaries for v0.1
 

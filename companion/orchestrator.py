@@ -4,10 +4,12 @@ import queue
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 from .config import RuntimeConfig
+from .analysis import TurnAnalysisService
 from .context_builder import ContextBuilder, CriticalContextError
 from .database import Database
 from .gateway import (
@@ -40,10 +42,18 @@ class ActiveTurn:
     terminal_result: dict[str, Any] | None = None
     first_token_seen: bool = False
     invocation_id: str | None = None
+    analysis_scheduled: bool = False
 
 
 def detect_explicit_command(text: str) -> tuple[str, str] | None:
     stripped = text.strip()
+    remember_prefix = re.match(
+        r"^(?:(?:これ|それ)\s*)?(?:を|は)?\s*(?:覚えておいて|覚えといて|覚えてください|覚えてね|記憶してください|記憶して|覚えて|remember\s+(?:this|that))\s*[、。.!！?？:：-]*\s*(.+)$",
+        stripped,
+        re.I | re.S,
+    )
+    if remember_prefix:
+        return "remember", remember_prefix.group(1).strip()
     if re.search(r"(?:忘れておいて|忘れといて|忘れてください|忘れて|消して|forget\s+(?:this|that))[\s。.!！?？]*$", stripped, re.I):
         return "forget", ""
     if re.search(r"(?:覚えておいて|覚えといて|覚えてください|覚えてね|記憶してください|記憶して|覚えて|remember\s+(?:this|that))[\s。.!！?？]*$", stripped, re.I):
@@ -69,8 +79,17 @@ class ConversationRuntime:
         self.config = config
         self._active: dict[str, ActiveTurn] = {}
         self._active_lock = threading.Lock()
+        self._begin_lock = threading.Lock()
+        self.analysis = TurnAnalysisService(db, repository, provider, config)
+        self._analysis_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="turn-analysis")
+        self._analysis_lock = threading.Lock()
+        self._analysis_cancel_events: dict[str, threading.Event] = {}
+        self._analysis_running: set[str] = set()
+        if hasattr(provider, "chat_json"):
+            for pending_turn_id in self.analysis.pending_turn_ids():
+                self._schedule_analysis_id(pending_turn_id)
 
-    def begin(self, text: str) -> ActiveTurn:
+    def begin(self, text: str, reply_to_message_id: str | None = None) -> ActiveTurn:
         if not isinstance(text, str):
             raise ValueError("text must be a string")
         text = text.strip()
@@ -78,20 +97,38 @@ class ConversationRuntime:
             raise ValueError("text must not be empty")
         if len(text) > MAX_USER_TEXT_CHARS:
             raise ValueError(f"text must be {MAX_USER_TEXT_CHARS} characters or fewer")
-        turn = self.repository.create_turn(text)
-        detected = detect_explicit_command(text)
-        marker = None
-        if detected:
-            kind, target_text = detected
-            marker = self.repository.save_explicit_command_marker(
-                turn["turn_id"], kind, True, target_text, turn["state_revision"]
-            )
-            if marker:
-                marker["resolution_status"] = "not_found" if kind == "forget" else "resolved"
-        session = ActiveTurn(turn=turn, command_marker=marker)
-        with self._active_lock:
-            self._active[turn["turn_id"]] = session
-        return session
+        with self._begin_lock:
+            self._preempt_running_analyses()
+            with self._active_lock:
+                previous = [session for session in self._active.values() if not session.finalized.is_set()]
+            for session in previous:
+                self._interrupt_for_new_turn(session)
+            turn = self.repository.create_turn(text, reply_to_message_id)
+            detected = detect_explicit_command(text)
+            marker = None
+            if detected:
+                kind, target_text = detected
+                marker = self.repository.save_explicit_command_marker(
+                    turn["turn_id"], kind, True, target_text, turn["state_revision"]
+                )
+                if marker:
+                    marker["resolution_status"] = "not_found" if kind == "forget" else "resolved"
+            session = ActiveTurn(turn=turn, command_marker=marker)
+            with self._active_lock:
+                self._active[turn["turn_id"]] = session
+            return session
+
+    def _interrupt_for_new_turn(self, session: ActiveTurn) -> None:
+        turn_id = session.turn["turn_id"]
+        with session.lock:
+            if session.finalized.is_set():
+                return
+            session.terminal_reason = "superseded_by_new_user_turn"
+            session.requested_terminal_status = "cancelled"
+            session.cancel.set()
+        self.repository.cancel_turn(turn_id, "superseded_by_new_user_turn")
+        # Stop accepting delivery first, then atomically freeze the acknowledged prefix.
+        self._finalize(session, "cancelled", "superseded_by_new_user_turn")
 
     def get_active(self, turn_id: str) -> ActiveTurn | None:
         with self._active_lock:
@@ -108,6 +145,8 @@ class ConversationRuntime:
         if not isinstance(offset, int) or offset < 0 or not isinstance(text, str) or not text:
             raise ValueError("delivery checkpoint requires a non-empty text and non-negative offset")
         with session.lock:
+            if session.cancel.is_set() or session.finalized.is_set():
+                raise RuntimeError("turn no longer accepts delivery checkpoints")
             end = offset + len(text)
             if end > len(session.generated_text):
                 raise ValueError("delivery checkpoint extends beyond generated text")
@@ -195,7 +234,58 @@ class ConversationRuntime:
             result = self.repository.finalize_delivery(session.turn["turn_id"], status, reason)
             session.terminal_result = result
             session.finalized.set()
+            self._schedule_terminal_analysis(session)
             return result
+
+    def _preempt_running_analyses(self) -> None:
+        with self._analysis_lock:
+            for turn_id in self._analysis_running:
+                cancel = self._analysis_cancel_events.get(turn_id)
+                if cancel:
+                    cancel.set()
+
+    def _schedule_terminal_analysis(self, session: ActiveTurn) -> None:
+        if session.analysis_scheduled or not hasattr(self.provider, "chat_json"):
+            return
+        session.analysis_scheduled = True
+        turn_id = session.turn["turn_id"]
+        for pending_id in (*self.analysis.pending_turn_ids(), turn_id):
+            self._schedule_analysis_id(pending_id)
+
+    def _schedule_analysis_id(self, turn_id: str) -> None:
+        if not hasattr(self.provider, "chat_json"):
+            return
+        with self._analysis_lock:
+            existing = self._analysis_cancel_events.get(turn_id)
+            if existing is not None and not existing.is_set():
+                return
+            cancel = threading.Event()
+            self._analysis_cancel_events[turn_id] = cancel
+        self._analysis_pool.submit(self._run_analysis_after_idle, turn_id, cancel)
+
+    def _run_analysis_after_idle(self, turn_id: str, cancel: threading.Event) -> None:
+        try:
+            while not cancel.is_set():
+                with self._begin_lock:
+                    with self._active_lock:
+                        foreground_active = any(not session.finalized.is_set() for session in self._active.values())
+                    if not foreground_active:
+                        with self._analysis_lock:
+                            if cancel.is_set():
+                                return
+                            self._analysis_running.add(turn_id)
+                        break
+                cancel.wait(.05)
+            if not cancel.is_set():
+                self.analysis.run(turn_id, cancel)
+        except Exception:
+            # Analysis is background work; its failure must not affect delivery.
+            return
+        finally:
+            with self._analysis_lock:
+                self._analysis_running.discard(turn_id)
+                if self._analysis_cancel_events.get(turn_id) is cancel:
+                    self._analysis_cancel_events.pop(turn_id, None)
 
     def _wait_for_finalization(self, session: ActiveTurn) -> dict[str, Any]:
         if session.finalized.wait(15):
@@ -224,6 +314,7 @@ class ConversationRuntime:
                 "turn_id": turn["turn_id"],
                 "user_message_id": turn["user_message_id"],
                 "transcript_revision": turn["transcript_revision"],
+                "created_at": turn["committed_at"],
             }
             if session.cancel.is_set():
                 raise GenerationCancelled("cancelled before retrieval")
@@ -324,6 +415,8 @@ class ConversationRuntime:
                     if not producer.is_alive():
                         raise GenerationFailure("provider_stream_ended", "Model stream ended unexpectedly.", retryable=True)
                     continue
+                if session.cancel.is_set():
+                    raise GenerationCancelled(session.terminal_reason or "turn cancelled")
                 if kind == "delta":
                     delta: GenerationDelta = value
                     with session.lock:

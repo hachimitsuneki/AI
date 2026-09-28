@@ -77,7 +77,63 @@ class RuntimeRepository:
                 raise RuntimeError("local identity and conversation have not been initialized")
             return dict(row)
 
-    def create_turn(self, user_text: str) -> dict[str, Any]:
+    def learned_context(self, ai_identity_id: str, user_profile_id: str) -> dict[str, list[dict[str, Any]]]:
+        with self.db.session() as conn:
+            self_rows = conn.execute(
+                """SELECT id, category, subject, value, confidence, status
+                   FROM SELF_MODEL_ITEM WHERE ai_identity_id = ?
+                     AND status IN ('active', 'current', 'confirmed')
+                   ORDER BY confidence DESC, valid_from DESC LIMIT 8""",
+                (ai_identity_id,),
+            ).fetchall()
+            self_hypotheses = conn.execute(
+                """SELECT id, category, subject, statement AS value, confidence, status
+                   FROM SELF_HYPOTHESIS WHERE ai_identity_id = ? AND status IN ('active', 'hypothesis')
+                   ORDER BY confidence DESC, created_at DESC LIMIT 8""",
+                (ai_identity_id,),
+            ).fetchall()
+            user_rows = conn.execute(
+                """SELECT id, category, subject, value, confidence, temporal_scope, status
+                   FROM USER_MODEL_ITEM WHERE user_profile_id = ?
+                     AND status IN ('active', 'current', 'confirmed')
+                   ORDER BY confidence DESC, updated_at DESC LIMIT 8""",
+                (user_profile_id,),
+            ).fetchall()
+            user_hypotheses = conn.execute(
+                """SELECT id, category, subject, statement AS value, confidence, status
+                   FROM USER_HYPOTHESIS WHERE user_profile_id = ?
+                     AND status IN ('active', 'hypothesis')
+                   ORDER BY confidence DESC, created_at DESC LIMIT 8""",
+                (user_profile_id,),
+            ).fetchall()
+            relationship_rows = conn.execute(
+                """SELECT rd.id, rd.dimension_type, rd.value, rd.confidence, rd.stability
+                   FROM RELATIONSHIP r JOIN RELATIONSHIP_DIMENSION rd ON rd.relationship_id = r.id
+                   WHERE r.ai_identity_id = ? AND r.user_profile_id = ?
+                   ORDER BY rd.dimension_type LIMIT 8""",
+                (ai_identity_id, user_profile_id),
+            ).fetchall()
+            self_items = [dict(row) for row in self_rows]
+            known_self_ids = {row["id"] for row in self_items}
+            self_items.extend(
+                {**dict(row), "status": "hypothesis"}
+                for row in self_hypotheses
+                if row["id"] not in known_self_ids
+            )
+            user_items = [dict(row) for row in user_rows]
+            known_user_ids = {row["id"] for row in user_items}
+            user_items.extend(
+                {**dict(row), "status": "hypothesis"}
+                for row in user_hypotheses
+                if row["id"] not in known_user_ids
+            )
+            return {
+                "learned_self": self_items[:8],
+                "user_model": user_items[:8],
+                "relationship": [dict(row) for row in relationship_rows],
+            }
+
+    def create_turn(self, user_text: str, reply_to_message_id: str | None = None) -> dict[str, Any]:
         timestamp = now_iso()
         with self.db.transaction() as conn:
             scope = conn.execute(
@@ -86,6 +142,15 @@ class RuntimeRepository:
             ).fetchone()
             if not scope:
                 raise RuntimeError("local conversation is missing")
+            if reply_to_message_id is not None:
+                reply_target = conn.execute(
+                    """SELECT id FROM MESSAGE WHERE id = ? AND conversation_id = ?
+                       AND (speaker = 'user' AND status = 'committed'
+                            OR speaker = 'assistant' AND status IN ('delivery_partial', 'delivered'))""",
+                    (reply_to_message_id, scope["conversation_id"]),
+                ).fetchone()
+                if not reply_target:
+                    raise ValueError("reply target must be a canonical message in this conversation")
             active = conn.execute(
                 """SELECT id FROM TURN_RUN WHERE conversation_id = ?
                    AND status IN ('preparing', 'generating', 'streaming') LIMIT 1""",
@@ -109,9 +174,9 @@ class RuntimeRepository:
             )
             conn.execute(
                 """INSERT INTO MESSAGE
-                   (id, conversation_id, speaker, content, channel, status, created_at)
-                   VALUES (?, ?, 'user', ?, 'text', 'committed', ?)""",
-                (user_message_id, scope["conversation_id"], user_text, timestamp),
+                   (id, conversation_id, speaker, content, channel, status, created_at, reply_to_message_id)
+                   VALUES (?, ?, 'user', ?, 'text', 'committed', ?, ?)""",
+                (user_message_id, scope["conversation_id"], user_text, timestamp, reply_to_message_id),
             )
             conn.execute(
                 """INSERT INTO TURN_RUN
@@ -157,6 +222,7 @@ class RuntimeRepository:
                 "transcript_revision": transcript_revision,
                 "turn_sequence": turn_sequence,
                 "committed_at": timestamp,
+                "reply_to_message_id": reply_to_message_id,
                 "causation_event_id": event_id,
             }
 
@@ -807,26 +873,109 @@ class RuntimeRepository:
                 {"status": status, "assistant_message_id": message_id},
             )
 
-    def history(self, limit: int = 500) -> list[dict[str, Any]]:
+    @staticmethod
+    def _canonical_message_query(where: str) -> str:
+        return f"""SELECT m.id, m.speaker, m.content, m.status, m.created_at, m.completed_at,
+                          m.reply_to_message_id, reply.speaker AS reply_to_speaker,
+                          reply.content AS reply_to_content,
+                          tr.id AS turn_id, tr.status AS turn_status
+                   FROM MESSAGE m
+                   LEFT JOIN MESSAGE reply ON reply.id = m.reply_to_message_id
+                   LEFT JOIN TURN_RUN tr ON tr.user_message_id = m.id OR tr.assistant_message_id = m.id
+                   WHERE {where}
+                     AND (m.speaker = 'user' AND m.status = 'committed'
+                          OR m.speaker = 'assistant' AND m.content <> ''
+                             AND m.status IN ('delivery_partial', 'delivered'))"""
+
+    def history_page(
+        self,
+        limit: int = 60,
+        before_created_at: str | None = None,
+        before_id: str | None = None,
+    ) -> dict[str, Any]:
+        bounded_limit = max(1, min(int(limit), 100))
         with self.db.session() as conn:
             conversation = conn.execute(
-                "SELECT id, ai_identity_id, user_profile_id FROM CONVERSATION ORDER BY started_at DESC LIMIT 1"
+                "SELECT id FROM CONVERSATION ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            if not conversation:
+                return {"messages": [], "has_more": False, "next_cursor": None}
+            where = "m.conversation_id = ?"
+            params: list[Any] = [conversation["id"]]
+            if before_created_at is not None or before_id is not None:
+                if not before_created_at or not before_id:
+                    raise ValueError("both history cursor fields are required")
+                where += " AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))"
+                params.extend((before_created_at, before_created_at, before_id))
+            rows = conn.execute(
+                self._canonical_message_query(where) + " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+                (*params, bounded_limit + 1),
+            ).fetchall()
+            has_more = len(rows) > bounded_limit
+            page = [dict(row) for row in reversed(rows[:bounded_limit])]
+            cursor = None
+            if has_more and page:
+                cursor = {"created_at": page[0]["created_at"], "id": page[0]["id"]}
+            return {"messages": page, "has_more": has_more, "next_cursor": cursor}
+
+    def history(self, limit: int = 500) -> list[dict[str, Any]]:
+        # Compatibility helper for internal callers and older tests.
+        page = self.history_page(min(limit, 100))
+        return page["messages"]
+
+    def search_history(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+        query = query.strip()
+        if not query:
+            return []
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self.db.session() as conn:
+            conversation = conn.execute(
+                "SELECT id FROM CONVERSATION ORDER BY started_at DESC LIMIT 1"
             ).fetchone()
             if not conversation:
                 return []
             rows = conn.execute(
-                """SELECT m.id, m.speaker, m.content, m.status, m.created_at, m.completed_at,
-                          tr.id AS turn_id, tr.status AS turn_status
-                   FROM MESSAGE m
-                   LEFT JOIN TURN_RUN tr ON tr.user_message_id = m.id OR tr.assistant_message_id = m.id
-                   WHERE m.conversation_id = ?
-                     AND (m.speaker = 'user' AND m.status = 'committed'
-                          OR m.speaker = 'assistant' AND m.content <> ''
-                             AND m.status IN ('delivering', 'delivery_partial', 'delivered'))
-                   ORDER BY m.created_at, m.id LIMIT ?""",
-                (conversation["id"], limit),
+                self._canonical_message_query("m.conversation_id = ? AND m.content LIKE ? ESCAPE '\\'")
+                + " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+                (conversation["id"], f"%{escaped}%", max(1, min(int(limit), 100))),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def history_around(self, message_id: str, radius: int = 30) -> dict[str, Any]:
+        bounded_radius = max(1, min(int(radius), 50))
+        with self.db.session() as conn:
+            conversation = conn.execute(
+                "SELECT id FROM CONVERSATION ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            if not conversation:
+                raise KeyError(f"unknown message: {message_id}")
+            target = conn.execute(
+                self._canonical_message_query("m.conversation_id = ? AND m.id = ?"),
+                (conversation["id"], message_id),
+            ).fetchone()
+            if not target:
+                raise KeyError(f"unknown canonical message: {message_id}")
+            older = conn.execute(
+                self._canonical_message_query(
+                    "m.conversation_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))"
+                ) + " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+                (conversation["id"], target["created_at"], target["created_at"], target["id"], bounded_radius + 1),
+            ).fetchall()
+            newer = conn.execute(
+                self._canonical_message_query(
+                    "m.conversation_id = ? AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
+                ) + " ORDER BY m.created_at, m.id LIMIT ?",
+                (conversation["id"], target["created_at"], target["created_at"], target["id"], bounded_radius + 1),
+            ).fetchall()
+            messages = [dict(row) for row in reversed(older[:bounded_radius])]
+            messages.append(dict(target))
+            messages.extend(dict(row) for row in newer[:bounded_radius])
+            return {
+                "messages": messages,
+                "target_id": message_id,
+                "has_older": len(older) > bounded_radius,
+                "has_newer": len(newer) > bounded_radius,
+            }
 
     def recent_messages(self, conversation_id: str, exclude_message_id: str, limit: int = 12) -> list[dict[str, Any]]:
         with self.db.session() as conn:

@@ -5,7 +5,7 @@ import mimetypes
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from typing import Any
 
 from .config import RuntimeConfig, load_config
@@ -110,7 +110,6 @@ class LocalRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/bootstrap":
             try:
                 identity = self.app.repository.default_scope()
-                health = self.app.provider.health()
                 self._send_json(
                     200,
                     {
@@ -120,18 +119,39 @@ class LocalRequestHandler(BaseHTTPRequestHandler):
                             "role": identity["role"],
                         },
                         "conversation_id": identity["conversation_id"],
-                        "history": self.app.repository.history(),
-                        "runtime_profile": {
-                            "profile_id": self.app.config.profile_id,
-                            "main_model": self.app.config.main_model,
-                            "embedding_model": self.app.config.embedding_model,
-                            "context_budget_tokens": self.app.config.context_budget_tokens,
-                        },
-                        "provider": health,
                     },
                 )
             except Exception as exc:
                 self._send_json(500, {"error": "bootstrap_failed", "message": str(exc)})
+            return
+        if parsed.path == "/api/history":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int(params.get("limit", ["60"])[0])
+                before_at = params.get("before_created_at", [None])[0]
+                before_id = params.get("before_id", [None])[0]
+                self._send_json(200, self.app.repository.history_page(limit, before_at, before_id))
+            except (ValueError, TypeError) as exc:
+                self._send_json(400, {"error": "invalid_request", "message": str(exc)})
+            return
+        if parsed.path == "/api/search":
+            params = parse_qs(parsed.query)
+            query = params.get("q", [""])[0]
+            if len(query) > 200:
+                self._send_json(400, {"error": "invalid_request", "message": "search query must be 200 characters or fewer"})
+                return
+            self._send_json(200, {"results": self.app.repository.search_history(query)})
+            return
+        if parsed.path == "/api/history/around":
+            params = parse_qs(parsed.query)
+            message_id = params.get("id", [""])[0]
+            try:
+                radius = int(params.get("radius", ["30"])[0])
+                self._send_json(200, self.app.repository.history_around(message_id, radius))
+            except KeyError as exc:
+                self._send_json(404, {"error": "message_not_found", "message": str(exc)})
+            except (ValueError, TypeError) as exc:
+                self._send_json(400, {"error": "invalid_request", "message": str(exc)})
             return
         if parsed.path == "/api/health":
             provider = self.app.provider.health()
@@ -209,7 +229,10 @@ class LocalRequestHandler(BaseHTTPRequestHandler):
         text = payload.get("text")
         if not isinstance(text, str):
             raise ValueError("text must be a string")
-        session = self.app.runtime.begin(text)
+        reply_to_message_id = payload.get("reply_to_message_id")
+        if reply_to_message_id is not None and not isinstance(reply_to_message_id, str):
+            raise ValueError("reply_to_message_id must be a string or null")
+        session = self.app.runtime.begin(text, reply_to_message_id)
         stream = self.app.runtime.stream(session)
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
