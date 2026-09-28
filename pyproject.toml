@@ -1,0 +1,12 @@
+[project]
+name = "text-v01-local-runtime"
+version = "0.1.0"
+description = "Local foreground conversation vertical slice for Text v0.1"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+text-v01 = "companion.server:serve"
+
+[tool.unittest]
+start-directory = "tests"

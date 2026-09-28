@@ -3,7 +3,7 @@
 - Project: 自立型AI / 継続人格型デジタルコンパニオン
 - Canonical source version: `0.1-draft-handoff-2026-09-27-r16`
 - Updated: 2026-09-27 JST
-- Status: **Text v0.1 Definition of Ready監査完了 / Codex実コード未着手**
+- Status: **WP-TXT-01〜06実装済み / foreground 1ターン会話をローカル検証済み / WP-TXT-07以降は未着手**
 
 > **重要:** このルートファイルはGit上の入口/索引です。元の約20万bytesの`PROJECT_HANDOFF.md r16`を要約して置換するものではありません。完全なr16本文は `docs/canonical/r16/` の19partを順番に読んでください。
 
@@ -42,25 +42,25 @@ Git化前に独立仕様書として存在した文書は、r16 handoffを含め
 
 ## Current implementation state
 
-- Text v0.1: **READY FOR CODEX IMPLEMENTATION / P0 blocker 0**
-- Application code: 未着手
-- DB migration: 未着手
-- automated test code: 未着手
-- model server deployment: 未着手
+- Text v0.1: **WP-TXT-01〜06を実装・ローカル検証済み / WP-TXT-07以降は未着手**
+- Application code: WP-TXT-01〜06実装済み。実行証拠と境界は [`CURRENT.md`](CURRENT.md) を参照
+- DB schema / migration: SQLite schema migrationを実装し、初期化・整合性を確認済み
+- automated test code: 実装済み。`CURRENT.md` に記載の9件が成功
+- model server deployment: ローカルOllama接続のみ確認。配備・ハードウェア計測は未実施
 - hardware benchmark: 未実施
 
-## First implementation path
+## Implementation path and current position
 
 ```text
-WP-TXT-01 Canonical Domain schema + repository contract
+WP-TXT-01 Canonical Domain schema + repository contract — implemented / locally verified
 ↓
-WP-TXT-02 Turn / Event / Attempt lifecycle
+WP-TXT-02 Turn / Event / Attempt lifecycle — implemented / locally verified
 ↓
-WP-TXT-03 Retrieval + WP-TXT-04 Context Builder
+WP-TXT-03 Retrieval + WP-TXT-04 Context Builder — implemented / locally verified
 ↓
-WP-TXT-05 Gateway/Main streaming + WP-TXT-06 Delivery truth
+WP-TXT-05 Gateway/Main streaming + WP-TXT-06 Delivery truth — implemented / locally verified
 ↓
-foreground: 1ターン普通に会話できるVertical Slice
+foreground: 1ターン普通に会話できるVertical Slice — implemented / live-verified
 ↓
 WP-TXT-07 Turn Analyzer + WP-TXT-08 Validator/Projector
 ↓
