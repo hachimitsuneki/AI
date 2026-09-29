@@ -74,6 +74,18 @@ class FakeProvider:
         )
 
 
+class FailingAnalyzerProvider(FakeProvider):
+    def __init__(self):
+        super().__init__()
+        self.analysis_started = Event()
+        self.release_analysis_failure = Event()
+
+    def chat_json(self, _messages, _schema, _cancel, *, model=None, timeout=None):
+        self.analysis_started.set()
+        self.release_analysis_failure.wait(2)
+        raise GenerationFailure("provider_unavailable", "simulated Analyzer outage", retryable=True)
+
+
 class RuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -336,6 +348,37 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(assistant["status"], "delivered")
         self.assertEqual(sum(span["char_end"] - span["char_start"] for span in trace["delivery_spans"]), len(assistant["content"]))
         self.assertEqual(len(self.repo.history()), 2)
+
+    def test_analyzer_failure_does_not_delay_successful_foreground_chat(self) -> None:
+        provider = FailingAnalyzerProvider()
+        runtime = self.make_runtime(provider)
+        session = runtime.begin("Analyzerが停止していても会話を続ける")
+        events = []
+        for event in runtime.stream(session):
+            events.append(event)
+            if event["type"] == "delta":
+                runtime.acknowledge_delivery(
+                    session.turn["turn_id"], event["offset"], event["text"]
+                )
+        finalized = events[-1]
+        self.assertEqual(finalized["type"], "turn_finalized")
+        self.assertEqual(finalized["status"], "completed")
+        self.assertTrue(provider.analysis_started.wait(1))
+        provider.release_analysis_failure.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with self.db.session() as conn:
+                analysis = conn.execute(
+                    "SELECT status, error_code FROM TURN_ANALYSIS WHERE turn_run_id = ?",
+                    (session.turn["turn_id"],),
+                ).fetchone()
+            if analysis and analysis["status"] == "failed":
+                break
+            time.sleep(.01)
+        self.assertIsNotNone(analysis)
+        self.assertEqual(tuple(analysis), ("failed", "provider_unavailable"))
+        self.assertEqual(self.repo.get_message(finalized["assistant_message_id"])["status"], "delivered")
+        runtime._analysis_pool.shutdown(wait=True)
 
     def test_existing_database_migration_adds_reply_and_updates_only_legacy_identity(self) -> None:
         legacy_path = Path(self.temp_dir.name) / "legacy.sqlite3"

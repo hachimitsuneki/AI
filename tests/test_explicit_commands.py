@@ -296,6 +296,211 @@ class ExplicitCommandRuntimeGoldenTests(unittest.TestCase):
         self.assertEqual(after_revision, before_revision)
         self.assertEqual({row["status"] for row in statuses}, {"active"})
 
+    def test_cmd_gold_004_mixed_evidence_forget_hides_source_derived_state(self) -> None:
+        timestamp = now_iso()
+        source_turn = self.repo.create_turn("京都が好きで、紅茶も好きです。")
+        assistant_id = new_id()
+        assistant_text = "京都と紅茶の両方が好きなんだね。"
+        with self.db.transaction() as conn:
+            conn.execute(
+                """INSERT INTO MESSAGE
+                   (id, conversation_id, speaker, content, channel, status, delivery_offset, created_at)
+                   VALUES (?, ?, 'assistant', ?, 'text', 'delivered', ?, ?)""",
+                (assistant_id, source_turn["conversation_id"], assistant_text, len(assistant_text), timestamp),
+            )
+            conn.execute(
+                "UPDATE TURN_RUN SET assistant_message_id = ? WHERE id = ?",
+                (assistant_id, source_turn["turn_id"]),
+            )
+        self.repo.finalize_delivery(source_turn["turn_id"], "completed")
+
+        memory_a = new_id()
+        memory_b = new_id()
+        model_a = new_id()
+        model_b = new_id()
+        shared_model = new_id()
+        shared_hypothesis = new_id()
+        self_model = new_id()
+        self_hypothesis = new_id()
+        observation = new_id()
+        relationship_id = new_id()
+        dimension_id = new_id()
+        signal_id = new_id()
+        with self.db.transaction() as conn:
+            for memory_id, summary, object_value in (
+                (memory_a, "ユーザーは京都が好き", "京都"),
+                (memory_b, "ユーザーは紅茶が好き", "紅茶"),
+            ):
+                conn.execute(
+                    """INSERT INTO MEMORY_ITEM
+                       (id, ai_identity_id, memory_kind, summary, importance, status, retention_class, created_at)
+                       VALUES (?, ?, 'claim', ?, .7, 'active', 'normal', ?)""",
+                    (memory_id, self.scope["ai_identity_id"], summary, timestamp),
+                )
+                conn.execute(
+                    """INSERT INTO MEMORY_CLAIM
+                       (memory_item_id, subject_type, predicate, object_value, confidence, claim_status, valid_from)
+                       VALUES (?, 'user', 'likes', ?, .8, 'current', ?)""",
+                    (memory_id, object_value, timestamp),
+                )
+                conn.execute(
+                    """INSERT INTO MEMORY_EVIDENCE
+                       (id, memory_item_id, message_id, evidence_type, support_weight)
+                       VALUES (?, ?, ?, 'direct_statement', .9)""",
+                    (new_id(), memory_id, source_turn["user_message_id"]),
+                )
+                model_id = model_a if memory_id == memory_a else model_b
+                conn.execute(
+                    """INSERT INTO USER_MODEL_ITEM
+                       (id, user_profile_id, category, subject, value, confidence, temporal_scope,
+                        status, valid_from, updated_at)
+                       VALUES (?, ?, 'preference', ?, ?, .8, 'persistent', 'active', ?, ?)""",
+                    (model_id, self.scope["user_profile_id"], object_value, summary, timestamp, timestamp),
+                )
+                conn.execute(
+                    """INSERT INTO USER_MODEL_EVIDENCE(user_model_item_id, memory_claim_id, support_weight)
+                       VALUES (?, ?, .9)""",
+                    (model_id, memory_id),
+                )
+
+            conn.execute(
+                """INSERT INTO USER_MODEL_ITEM
+                   (id, user_profile_id, category, subject, value, confidence, temporal_scope,
+                    status, valid_from, updated_at)
+                   VALUES (?, ?, 'preference', 'shared', 'Both Kyoto and tea', .7, 'persistent', 'active', ?, ?)""",
+                (shared_model, self.scope["user_profile_id"], timestamp, timestamp),
+            )
+            for memory_id in (memory_a, memory_b):
+                conn.execute(
+                    """INSERT INTO USER_MODEL_EVIDENCE(user_model_item_id, memory_claim_id, support_weight)
+                       VALUES (?, ?, .5)""",
+                    (shared_model, memory_id),
+                )
+            conn.execute(
+                """INSERT INTO USER_HYPOTHESIS
+                   (id, user_profile_id, category, subject, statement, confidence, status, created_at, updated_at)
+                   VALUES (?, ?, 'interest', 'shared topics', 'Often enjoys Kyoto and tea', .5, 'hypothesis', ?, ?)""",
+                (shared_hypothesis, self.scope["user_profile_id"], timestamp, timestamp),
+            )
+            for memory_id in (memory_a, memory_b):
+                conn.execute(
+                    """INSERT INTO USER_HYPOTHESIS_EVIDENCE
+                       (id, user_hypothesis_id, memory_item_id, polarity, evidence_weight)
+                       VALUES (?, ?, ?, 'supports', .5)""",
+                    (new_id(), shared_hypothesis, memory_id),
+                )
+
+            conn.execute(
+                """INSERT INTO SELF_OBSERVATION
+                   (id, ai_identity_id, source_message_id, observation_type, subject, description,
+                    spontaneity, user_influence, context_key, observed_at)
+                   VALUES (?, ?, ?, 'interest_response', 'tea', 'Showed interest in the shared topic.', .5, .2, '', ?)""",
+                (observation, self.scope["ai_identity_id"], assistant_id, timestamp),
+            )
+            conn.execute(
+                """INSERT INTO SELF_MODEL_ITEM
+                   (id, ai_identity_id, category, subject, value, confidence, stability,
+                    origin, status, valid_from)
+                   VALUES (?, ?, 'interest', 'tea', 'Enjoys discussing tea', .5, .3, 'evidence', 'active', ?)""",
+                (self_model, self.scope["ai_identity_id"], timestamp),
+            )
+            conn.execute(
+                """INSERT INTO SELF_MODEL_EVIDENCE(self_model_item_id, self_observation_id, support_weight)
+                   VALUES (?, ?, .5)""",
+                (self_model, observation),
+            )
+            conn.execute(
+                """INSERT INTO SELF_HYPOTHESIS
+                   (id, ai_identity_id, category, subject, statement, confidence, status, created_at, updated_at)
+                   VALUES (?, ?, 'interest', 'tea', 'Might enjoy tea discussions', .4, 'hypothesis', ?, ?)""",
+                (self_hypothesis, self.scope["ai_identity_id"], timestamp, timestamp),
+            )
+            conn.execute(
+                """INSERT INTO HYPOTHESIS_EVIDENCE
+                   (id, self_hypothesis_id, self_observation_id, polarity, evidence_weight, independence_weight, created_at)
+                   VALUES (?, ?, ?, 'positive', .5, .5, ?)""",
+                (new_id(), self_hypothesis, observation, timestamp),
+            )
+            conn.execute(
+                """INSERT INTO RELATIONSHIP(id, ai_identity_id, user_profile_id, started_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (relationship_id, self.scope["ai_identity_id"], self.scope["user_profile_id"], timestamp, timestamp),
+            )
+            conn.execute(
+                """INSERT INTO RELATIONSHIP_DIMENSION
+                   (id, relationship_id, dimension_type, value, confidence, stability, updated_at)
+                   VALUES (?, ?, 'shared_history', .6, .5, .4, ?)""",
+                (dimension_id, relationship_id, timestamp),
+            )
+            conn.execute(
+                """INSERT INTO RELATIONSHIP_SIGNAL
+                   (id, relationship_id, signal_type, strength, reason, observed_at, source_message_id)
+                   VALUES (?, ?, 'shared_history_increase', .1, 'Discussed Kyoto and tea', ?, ?)""",
+                (signal_id, relationship_id, timestamp, source_turn["user_message_id"]),
+            )
+            conn.execute(
+                """INSERT INTO RELATIONSHIP_DIMENSION_EVIDENCE
+                   (id, relationship_dimension_id, relationship_signal_id, support_weight)
+                   VALUES (?, ?, ?, .5)""",
+                (new_id(), dimension_id, signal_id),
+            )
+
+        before = self.repo.learned_context(self.scope["ai_identity_id"], self.scope["user_profile_id"])
+        self.assertIn(self_model, {item["id"] for item in before["learned_self"]})
+        self.assertIn(self_hypothesis, {item["id"] for item in before["learned_self"]})
+        self.assertEqual(
+            {model_a, model_b, shared_model, shared_hypothesis},
+            {item["id"] for item in before["user_model"]},
+        )
+        self.assertEqual(len(before["relationship"]), 1)
+
+        forget = self.runtime().begin("「ユーザーは京都が好き」を忘れて")
+        marker = forget.command_marker
+        self.assertIsNotNone(marker)
+        assert marker is not None
+        self.assertEqual(marker["resolution_status"], "resolved")
+        self.assertEqual(marker["target_refs"], [{"source_kind": "memory_item", "source_ref": memory_a}])
+        self.assertTrue(marker["mutation_applied"])
+        with self.db.session() as conn:
+            statuses = {
+                row["id"]: row["status"]
+                for row in conn.execute(
+                    "SELECT id, status FROM MEMORY_ITEM WHERE id IN (?, ?)", (memory_a, memory_b)
+                )
+            }
+        self.assertEqual(statuses, {memory_a: "soft_deleted", memory_b: "active"})
+        after = self.repo.learned_context(self.scope["ai_identity_id"], self.scope["user_profile_id"])
+        self.assertEqual(after["learned_self"], [])
+        self.assertEqual({item["id"] for item in after["user_model"]}, {model_b})
+        self.assertEqual(after["relationship"], [])
+
+        self.repo.finalize_delivery(forget.turn["turn_id"], "failed_before_delivery", "mixed_evidence_forget")
+        followup = self.repo.create_turn("紅茶について前に何を話した？")
+        scope = {
+            "ai_identity_id": followup["ai_identity_id"],
+            "user_profile_id": followup["user_profile_id"],
+            "conversation_id": followup["conversation_id"],
+        }
+        retrieval = self.runtime().retriever.execute(
+            followup,
+            self.repo.get_message(followup["user_message_id"])["content"],
+            followup["user_message_id"],
+            scope,
+        )
+        self.assertIn(memory_b, {result.source_ref for result in retrieval.results})
+        self.assertNotIn(memory_a, {result.source_ref for result in retrieval.results})
+        capsule = ContextBuilder(self.repo, self.config).build(followup, retrieval)
+        capsule_text = json.dumps(capsule.to_record(), ensure_ascii=False)
+        self.assertIn("ユーザーは紅茶が好き", capsule_text)
+        self.assertNotIn("ユーザーは京都が好き", capsule_text)
+        self.assertNotIn("Both Kyoto and tea", capsule_text)
+        self.repo.finalize_delivery(followup["turn_id"], "failed_before_delivery", "mixed_evidence_followup")
+        analysis_input = TurnAnalysisService(self.db, self.repo, self.provider, self.config).build_input(followup["turn_id"])
+        analysis_text = json.dumps(analysis_input, ensure_ascii=False)
+        self.assertNotIn("京都が好き", analysis_text)
+        self.assertNotIn("Often enjoys Kyoto and tea", analysis_text)
+        self.assertIn("紅茶が好き", analysis_text)
+
     def test_cmd_gold_003_remember_secret_keeps_unique_code_owned_marker_but_saves_no_memory(self) -> None:
         secret = "sk-example-secret-value"
         user_text = f"覚えて。APIキーは {secret}"

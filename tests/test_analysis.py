@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from companion.analysis import TurnAnalysisService
+from companion.analysis import TurnAnalysisService, analysis_json_schema
 from companion.config import load_config
 from companion.database import Database, new_id, now_iso
 from companion.gateway import GenerationFailure
@@ -52,13 +52,21 @@ def memory_candidate(
     }
 
 
+def relation_schema_variants(schema: dict) -> list[dict]:
+    memory = schema["properties"]["memory_candidates"]["items"]["properties"]
+    relation = memory["relation_to_existing"]
+    return relation.get("anyOf", [relation])
+
+
 class FixtureAnalyzer:
     def __init__(self, output: dict):
         self.output = output
         self.inputs: list[list[dict[str, str]]] = []
+        self.schemas: list[dict] = []
 
     def chat_json(self, messages, schema, cancel, *, model=None, timeout=None):
         self.inputs.append(messages)
+        self.schemas.append(schema)
         if cancel.is_set():
             raise RuntimeError("unexpected cancellation")
         return self.output
@@ -173,6 +181,40 @@ class AnalysisGoldenTests(unittest.TestCase):
         provider = FixtureAnalyzer(output)
         return TurnAnalysisService(self.db, self.repo, provider, self.config), provider
 
+    def test_analyzer_schema_separates_canonical_message_and_memory_ids(self) -> None:
+        message_id = "11111111-1111-4111-8111-111111111111"
+        assistant_id = "22222222-2222-4222-8222-222222222222"
+        memory_id = "33333333-3333-4333-8333-333333333333"
+        schema = analysis_json_schema([message_id, assistant_id], [memory_id])
+        memory = schema["properties"]["memory_candidates"]["items"]["properties"]
+        evidence_ids = memory["evidence_message_ids"]["items"]["enum"]
+        relation_variants = relation_schema_variants(schema)
+        self.assertEqual(evidence_ids, [message_id, assistant_id])
+        self.assertEqual(relation_variants[0]["properties"]["action"]["enum"], ["new", "uncertain"])
+        self.assertEqual(relation_variants[0]["properties"]["memory_id"]["enum"], [None])
+        self.assertEqual(
+            relation_variants[1]["properties"]["memory_id"]["enum"], [memory_id]
+        )
+        self.assertEqual(
+            set(relation_variants[1]["properties"]["action"]["enum"]),
+            {"duplicate", "supports", "contradicts", "corrects", "changes_over_time", "clarifies"},
+        )
+        self.assertNotIn(message_id, relation_variants[1]["properties"]["memory_id"]["enum"])
+        self.assertNotIn(memory_id, evidence_ids)
+
+        empty_schema = analysis_json_schema([], [])
+        empty_memory = empty_schema["properties"]["memory_candidates"]["items"]["properties"]
+        empty_relation = relation_schema_variants(empty_schema)[0]["properties"]
+        self.assertEqual(
+            empty_relation["action"]["enum"], ["new", "uncertain"]
+        )
+        self.assertEqual(
+            empty_relation["memory_id"]["enum"], [None]
+        )
+        self.assertEqual(
+            empty_memory["evidence_message_ids"]["items"]["enum"], ["__NO_ALLOWED_MESSAGE_ID__"]
+        )
+
     def test_an_gold_002_direct_user_claims_do_not_update_self(self) -> None:
         turn, user_id = self.make_turn("ホラーが好きだけど、ジャンプスケアは苦手。")
         output = empty_analysis()
@@ -180,9 +222,17 @@ class AnalysisGoldenTests(unittest.TestCase):
             memory_candidate("ホラー", "ユーザーはホラーが好き", user_id),
             memory_candidate("ジャンプスケア", "ユーザーはジャンプスケアが苦手", user_id),
         ]
-        service, _provider = self.service(output)
+        service, provider = self.service(output)
         result = service.run(turn["turn_id"])
         self.assertEqual(result["status"], "committed")
+        memory_schema = provider.schemas[0]["properties"]["memory_candidates"]["items"]["properties"]
+        relation = relation_schema_variants(provider.schemas[0])[0]["properties"]
+        self.assertEqual(relation["action"]["enum"], ["new", "uncertain"])
+        self.assertEqual(relation["memory_id"]["enum"], [None])
+        self.assertEqual(
+            memory_schema["evidence_message_ids"]["items"]["enum"], [user_id]
+        )
+        self.assertIn("it is never a Message ID", provider.inputs[0][0]["content"])
         with self.db.session() as conn:
             claims = conn.execute(
                 """SELECT mc.predicate, mc.object_value FROM MEMORY_CLAIM mc
@@ -193,6 +243,51 @@ class AnalysisGoldenTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM SELF_MODEL_ITEM").fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM SELF_HYPOTHESIS").fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM USER_MODEL_ITEM").fetchone()[0], 2)
+
+    def test_direct_user_fact_misclassified_as_episode_is_rejected(self) -> None:
+        turn, user_id = self.make_turn("私は青色が好きです。")
+        output = empty_analysis()
+        output["memory_candidates"] = [memory_candidate(
+            "青色", "ユーザーは青色が好き", user_id,
+            candidate_kind="episode", subject_scope="user",
+        )]
+        service, _provider = self.service(output)
+        self.assertEqual(service.run(turn["turn_id"])["status"], "committed")
+        with self.db.session() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM MEMORY_ITEM").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM USER_MODEL_ITEM").fetchone()[0], 0)
+            proposal = conn.execute(
+                "SELECT outcome, reason_code FROM ANALYSIS_PROPOSAL WHERE proposal_type = 'memory_candidate'"
+            ).fetchone()
+        self.assertEqual(tuple(proposal), ("rejected", "direct_user_fact_requires_claim"))
+
+    def test_direct_user_claim_rejects_duplicate_user_hypothesis(self) -> None:
+        turn, user_id = self.make_turn("My favorite color is cobalt.")
+        output = empty_analysis()
+        output["memory_candidates"] = [memory_candidate(
+            "favorite_color", "User's favorite color is cobalt.", user_id,
+        )]
+        output["user_observations"] = [{
+            "observation_type": "preference_signal",
+            "subject": "favorite_color",
+            "description": "User states a preference for cobalt.",
+            "basis": "current_context",
+            "temporal_scope": "persistent",
+            "evidence_strength": "strong",
+            "context_tags": [],
+            "evidence_message_ids": [user_id],
+        }]
+        service, _provider = self.service(output)
+        self.assertEqual(service.run(turn["turn_id"])["status"], "committed")
+        with self.db.session() as conn:
+            memory_count = conn.execute("SELECT COUNT(*) FROM MEMORY_ITEM").fetchone()[0]
+            user_model_count = conn.execute("SELECT COUNT(*) FROM USER_MODEL_ITEM").fetchone()[0]
+            hypothesis_count = conn.execute("SELECT COUNT(*) FROM USER_HYPOTHESIS").fetchone()[0]
+            decision = conn.execute(
+                "SELECT outcome, reason_code FROM ANALYSIS_PROPOSAL WHERE proposal_type = 'user_observation'"
+            ).fetchone()
+        self.assertEqual((memory_count, user_model_count, hypothesis_count), (1, 1, 0))
+        self.assertEqual(tuple(decision), ("rejected", "direct_claim_covers_user_observation"))
 
     def test_delayed_analysis_recent_context_excludes_future_turns(self) -> None:
         _prior, prior_id = self.make_turn("事前の話です。")
@@ -220,8 +315,20 @@ class AnalysisGoldenTests(unittest.TestCase):
             "猫の所属", "猫はユーザーの実家の猫", user_id,
             action="corrects", memory_id=memory_id, temporal_scope="current",
         )]
-        service, _ = self.service(output)
+        service, provider = self.service(output)
         self.assertEqual(service.run(turn["turn_id"])["status"], "committed")
+        memory_schema = provider.schemas[0]["properties"]["memory_candidates"]["items"]["properties"]
+        relation_variants = relation_schema_variants(provider.schemas[0])
+        self.assertEqual(
+            relation_variants[1]["properties"]["memory_id"]["enum"], [memory_id]
+        )
+        input_snapshot = json.loads(provider.inputs[0][1]["content"])
+        self.assertEqual(
+            memory_schema["evidence_message_ids"]["items"]["enum"],
+            input_snapshot["allowed_message_ids"],
+        )
+        self.assertIn(user_id, input_snapshot["allowed_message_ids"])
+        self.assertNotIn(memory_id, input_snapshot["allowed_message_ids"])
         with self.db.session() as conn:
             old = conn.execute("SELECT status FROM MEMORY_ITEM WHERE id = ?", (memory_id,)).fetchone()[0]
             revision = conn.execute("SELECT revision_type FROM MEMORY_REVISION WHERE memory_item_id = ?", (memory_id,)).fetchone()[0]

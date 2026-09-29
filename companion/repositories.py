@@ -151,7 +151,10 @@ class RuntimeRepository:
                 WHERE me.message_id IN ({placeholders})""",
             message_ids,
         ).fetchall()
-        return not rows or any(row["status"] != "soft_deleted" for row in rows)
+        # A surviving Memory from the same message must not keep derived state
+        # backed by a forgotten Memory visible. Without per-memory provenance
+        # on every derived item, fail closed for the whole shared source.
+        return not rows or all(row["status"] != "soft_deleted" for row in rows)
 
     @classmethod
     def _observation_sources_visible(cls, conn: sqlite3.Connection, observation_ids: list[str]) -> bool:
@@ -163,9 +166,9 @@ class RuntimeRepository:
             ).fetchone()
             if not row:
                 continue
-            if cls._messages_have_visible_memory(conn, cls._turn_message_ids(conn, row["source_message_id"])):
-                return True
-        return False
+            if not cls._messages_have_visible_memory(conn, cls._turn_message_ids(conn, row["source_message_id"])):
+                return False
+        return True
 
     @classmethod
     def _derived_item_visible(cls, conn: sqlite3.Connection, kind: str, item_id: str) -> bool:
@@ -188,7 +191,7 @@ class RuntimeRepository:
                    WHERE ume.user_model_item_id = ?""",
                 (item_id,),
             ).fetchall()
-            return not rows or any(
+            return not rows or all(
                 row["memory_status"] not in {"soft_deleted", "superseded"}
                 and row["claim_status"] != "historical"
                 for row in rows
@@ -200,7 +203,7 @@ class RuntimeRepository:
                    WHERE uhe.user_hypothesis_id = ?""",
                 (item_id,),
             ).fetchall()
-            return not rows or any(row["status"] != "soft_deleted" for row in rows)
+            return not rows or all(row["status"] != "soft_deleted" for row in rows)
         if kind == "relationship":
             rows = conn.execute(
                 """SELECT rs.source_message_id FROM RELATIONSHIP_DIMENSION_EVIDENCE rde
@@ -213,10 +216,10 @@ class RuntimeRepository:
             for row in rows:
                 source_message_id = row["source_message_id"]
                 if not source_message_id:
-                    return True
-                if cls._messages_have_visible_memory(conn, [source_message_id]):
-                    return True
-            return False
+                    continue
+                if not cls._messages_have_visible_memory(conn, [source_message_id]):
+                    return False
+            return True
         return True
 
     def create_turn(self, user_text: str, reply_to_message_id: str | None = None) -> dict[str, Any]:
