@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Text v0.1</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">会</div>
+          <div>
+            <h1 id="identity-name">AI</h1>
+            <p id="connection-state">ローカル会話</p>
+          </div>
+        </div>
+        <form id="search-form" class="search-form" role="search">
+          <label class="visually-hidden" for="history-search">会話履歴を検索</label>
+          <input id="history-search" type="search" maxlength="200" placeholder="会話を検索…">
+          <button type="submit">検索</button>
+        </form>
+      </header>
+
+      <section class="conversation" aria-label="会話" id="conversation">
+        <div class="search-results" id="search-results" hidden aria-live="polite"></div>
+        <div class="welcome" id="welcome">
+          <div class="welcome-icon" aria-hidden="true">✳</div>
+          <h2>会話を始めましょう</h2>
+          <p>メッセージはこの端末のローカルデータベースに保存されます。</p>
+        </div>
+        <button class="history-button" id="load-older" type="button" hidden>以前のメッセージを読み込む</button>
+        <div class="message-list" id="message-list" aria-live="polite"></div>
+        <div class="turn-status" id="turn-status" role="status" aria-live="polite"></div>
+        <button class="latest-button" id="scroll-latest" type="button" hidden>最新のメッセージへ ↓</button>
+      </section>
+
+      <footer class="composer-area">
+        <div class="reply-preview" id="reply-preview" hidden>
+          <div><strong>返信先</strong><span id="reply-preview-text"></span></div>
+          <button id="clear-reply" type="button" aria-label="返信先を解除">×</button>
+        </div>
+        <div class="composer">
+          <label class="visually-hidden" for="message-input">メッセージ</label>
+          <textarea id="message-input" rows="1" maxlength="20000" placeholder="メッセージを入力…" enterkeyhint="send"></textarea>
+          <button class="send-button" id="send-button" type="button" aria-label="送信">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12 20 4l-5.6 16-3-6.1L4 12Zm7.4 1.9L20 4"/></svg>
+          </button>
+          <button class="stop-button" id="stop-button" type="button" hidden>停止</button>
+        </div>
+        <p class="composer-note">Enterで送信・Shift + Enterで改行</p>
+      </footer>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

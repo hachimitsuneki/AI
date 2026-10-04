@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import math
+import os
+from dataclasses import dataclass
+from urllib.parse import urlparse
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    database_path: str
+    host: str
+    port: int
+    ollama_base_url: str
+    main_model: str
+    embedding_model: str
+    context_budget_tokens: int
+    max_generation_tokens: int
+    retrieval_max_results: int
+    retrieval_candidate_limit: int
+    retrieval_rrf_k: int
+    retrieval_foreground_deadline_seconds: float
+    request_timeout_seconds: float
+    analyzer_model: str
+    analyzer_timeout_seconds: float
+    think: bool | str | None
+    profile_id: str
+    identity_name: str
+    identity_role: str
+
+
+def _integer(name: str, default: int, minimum: int = 1) -> int:
+    value = int(os.environ.get(name, str(default)))
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    return value
+
+
+def _seconds(name: str, default: float, minimum: float = 0.001) -> float:
+    value = float(os.environ.get(name, str(default)))
+    if not math.isfinite(value) or value < minimum:
+        raise ValueError(f"{name} must be at least {minimum} seconds")
+    return value
+
+
+def _think_setting(name: str, default: str = "false") -> bool | str | None:
+    value = os.environ.get(name, default).strip().casefold()
+    if value in {"", "auto", "default", "none"}:
+        return None
+    if value in {"true", "1", "yes", "on"}:
+        return True
+    if value in {"false", "0", "no", "off"}:
+        return False
+    if value in {"low", "medium", "high", "max"}:
+        return value
+    raise ValueError(f"{name} must be true/false, a think level, or auto")
+
+
+def load_config() -> RuntimeConfig:
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    parsed = urlparse(base_url)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("P0 runtime accepts local Ollama only; remote context transmission is not enabled.")
+    return RuntimeConfig(
+        database_path=os.environ.get("COMPANION_DB_PATH", "data/text-v01.sqlite3"),
+        host=os.environ.get("COMPANION_HOST", "127.0.0.1"),
+        port=_integer("COMPANION_PORT", 8765),
+        ollama_base_url=base_url,
+        main_model=os.environ.get("COMPANION_MAIN_MODEL", "qwen3.5:2b-q4_K_M"),
+        embedding_model=os.environ.get("COMPANION_EMBEDDING_MODEL", "nomic-embed-text:latest"),
+        context_budget_tokens=_integer("COMPANION_CONTEXT_BUDGET_TOKENS", 8192),
+        max_generation_tokens=_integer("COMPANION_MAX_GENERATION_TOKENS", 1024),
+        retrieval_max_results=_integer("COMPANION_RETRIEVAL_MAX_RESULTS", 12),
+        retrieval_candidate_limit=_integer("COMPANION_RETRIEVAL_CANDIDATE_LIMIT", 500),
+        retrieval_rrf_k=_integer("COMPANION_RETRIEVAL_RRF_K", 60),
+        retrieval_foreground_deadline_seconds=_seconds(
+            "COMPANION_RETRIEVAL_FOREGROUND_DEADLINE_SECONDS", 2.0
+        ),
+        request_timeout_seconds=_seconds("COMPANION_REQUEST_TIMEOUT_SECONDS", 180.0),
+        analyzer_model=os.environ.get(
+            "COMPANION_ANALYZER_MODEL",
+            os.environ.get("COMPANION_MAIN_MODEL", "qwen3.5:2b-q4_K_M"),
+        ),
+        analyzer_timeout_seconds=_seconds("COMPANION_ANALYZER_TIMEOUT_SECONDS", 60.0),
+        think=_think_setting("COMPANION_THINK", "false"),
+        profile_id=os.environ.get("COMPANION_PROFILE_ID", "local-provisional-v1"),
+        identity_name=os.environ.get("COMPANION_IDENTITY_NAME", "AI"),
+        identity_role=os.environ.get("COMPANION_IDENTITY_ROLE", "digital companion"),
+    )
