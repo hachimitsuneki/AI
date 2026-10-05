@@ -1,19 +1,24 @@
 # Current implementation state
 
-Updated: 2026-09-30 (JST)
+Updated: 2026-10-05 (JST)
 
 ## Handoff position
 
 - Repository: https://github.com/hachimitsuneki/AI
-- Target branch: `codex/text-v01-p0`
+- Target branch: `codex/fix-chat-response-language` (PR targets `main`; merge remains a user decision).
+- Current fix baseline: `main` at the requested Base HEAD `1a721b31c67e22d360a0941a9a42d21080ccbbf6` (`Merge Text v0.1 P0 implementation`).
+- Response-language implementation/tests: `a3218c6ebb4051f528c738428cd7d930ddc0e746`.
+- Independent README cleanup: `97b654fb604bbf91c911d9d2423e72d63d20f3a7`. The following documentation-only commit records this validation; the tracked worktree is clean after it is committed.
+- Current scope: ordinary Main Dialogue response-language bugfix and README cleanup only; no product feature expansion or model/personality tuning.
+- Previous P0 implementation branch: `codex/text-v01-p0`. The baseline and verification history below are retained.
 - Prior task baseline: `e46228d1021296eae8e3a7734769326a1e0cd5db` (`Implement Text v0.1 foreground conversation slice`)
 - Prior implementation commit: `3c74754` (`Implement chat usability and semantic projection`).
 - Baseline before this P0 hardening: `ced97c9c32d3442063e4323e4bec7fc48efc9cfa`.
 - P0 hardening implementation commit: `a8ed997` (`Harden Text v0.1 P0 memory handling`).
 - Starting HEAD for final P0 validation: `fac3c1ea1af2fc5078970c20a82ce694f2e05918` on `codex/text-v01-p0`.
 - Final P0 validation implementation/test commit: `ec72b83` (`Harden analyzer semantic projections`). The following documentation-only commit records this result.
-- This validation changes only Analyzer/Repository behavior, regression tests, and project progress/handoff records; the worktree is expected clean after the handoff update is committed.
-- Scope in this task: final WP-TXT-01〜08 P0 validation after the prior WP-TXT-06.5 and WP-TXT-07/08 implementation.
+- That previous P0 validation changed only Analyzer/Repository behavior, regression tests, and project progress/handoff records; its handoff worktree was clean.
+- Scope in the previous validation: final WP-TXT-01〜08 P0 validation after the prior WP-TXT-06.5 and WP-TXT-07/08 implementation.
 - `PROJECT_HANDOFF.md` remains the top-level handoff entry point. This file holds the current status and verification evidence.
 - Read order: `AGENTS.md`, `agent.md`, `PROJECT_HANDOFF.md`, `docs/SPEC_REGISTRY.md`, `docs/canonical/r16/MANIFEST.md` and all parts in manifest order, `docs/TEXT_V01_IMPLEMENTATION_SPEC.md` and its four parts, `docs/TEXT_V01_READINESS_AUDIT.md`, `docs/ANALYZER_GOLDEN_SPEC.md`, `docs/RETRIEVAL_P0_SPEC.md`, then `CURRENT.md`.
 
@@ -115,7 +120,41 @@ Explicit Remember is recognized, recorded, and covered through `AN-GOLD-006`; Me
 - `WP-TXT-06.5` browser history paging beyond the initial page and multi-page streaming suppression have not been exercised.
 - Official Ollama API docs (checked 2026-09-28) distinguish the optional `think` parameter and the `message.thinking` and `message.content` fields. This is a possible diagnostic lead for the no-visible-delta run, not a confirmed cause; no model/runtime tuning was made. [Ollama API](https://github.com/ollama/ollama/blob/main/docs/api.md)
 
+## Response language bugfix validation — 2026-10-05
+
+Source: the user's current request, sections 1–6 and its completion criteria. This is a normal Chat behavior fix over the merged P0 baseline, with the canonical specifications and long-term requirements retained.
+
+### Implementation and regression evidence
+
+| Requested behavior | Implementation / automated evidence | Live evidence / remaining scope |
+|---|---|---|
+| Japanese current input requires Japanese output | `response_language.py` supplies mandatory `Output language: Japanese`, natural Japanese response, and explicit English-switch exceptions; `ContextBuilder` no longer relies on `when practical`. `test_japanese_capsule_has_mandatory_explicit_policy` passes. | Real local Main returned Japanese; canonical readback matched acknowledged output. |
+| English history / Identity cannot override Japanese current input | Policy is chosen from the canonical current User Message, before Main-only substitutions. `test_english_history_and_identity_do_not_override_current_japanese` passes with English history and the existing English Identity. | The live normal turn also had earlier English user history and the existing Identity. |
+| Resolved Japanese Forget retains its original language | `CMD-GOLD-001` now asserts original canonical input is unchanged, forgotten content stays absent, and both system instructions and the safe internal Main input retain the same Japanese policy. | Real `ConversationRuntime.begin` → Retrieval → Context → Ollama → delivery ACK → canonical readback completed in Japanese; target soft-deleted and revision advanced once. |
+| English / explicit requested-language priority | `test_english_capsule` and `test_explicit_language_requests_override_current_input_language` pass, including Japanese→English, English→Japanese, French, concise requests, and last explicit request priority. | English and third-language output compliance were not live-tested in this fix. |
+| Mixed code / model names / neutral input | Fenced/inline code, quoted instructions, URLs, and versioned identifiers are excluded from prose/explicit-request heuristics. Short Japanese questions retain Japanese. A language-neutral input uses the latest usable canonical user language; without such cues it falls back to English. Mixed-text, quoted/negated-request, and neutral-model-ID regressions pass. | This is a deterministic P0 heuristic, not exact multilingual classification. Explicit aliases cover Japanese, English, Chinese, Korean, French, German, and Spanish; arbitrary indirect requests and other languages remain unverified. |
+
+- Language policy is counted in mandatory dialogue/current-input context and survives budget trimming. The old fixed 650-token test failed because the mandatory prompt grew; it now budgets against the actual full capsule while retaining all older-history omission, newest-history retention, identity/current-input, and immutability assertions, plus a language-policy assertion. The product context budget remains unchanged.
+- An initial new test fixture also failed when repeated subcases left a turn active; the fixture now finalizes each context-only test turn. No tests were deleted, skipped, or weakened.
+- **Final full automated suite: 45 tests passed** (38 existing + 7 language tests), including `AN-GOLD-002/003/004/006/011/012/014`, `CMD-GOLD-001/002/003/004`, correction/current User Model, contradiction, mixed-evidence Forget, Analyzer-failure isolation, and Delivery truth. `python -m compileall -q companion`, `node --check companion/static/app.js`, and `git diff --check` passed.
+- Changed production code is confined to Main Context language policy and its safe Forget surrogate. Memory policy, Retrieval, command resolution/mutation, Analyzer/Projector semantics, delivery projection, Identity/personality, and model/runtime profile values are unchanged.
+- README cleanup is an independent documentation-only commit: it describes implemented WP-TXT-06.5/07/08, semantic persistence, Remember/Forget boundaries, existing Goldens, and the remaining WP-TXT-09/10/live Self/Relationship limits. It links to the handoff, current evidence, and canonical registry without replacing source specifications.
+
+### Real local Ollama execution
+
+- Used an isolated SQLite DB under ignored `artifacts/response-language-live-20261005/`; existing user conversation data was not used. Real Main `qwen3.5:2b-q4_K_M`, embedding `nomic-embed-text:latest`, and the existing `think:false` profile were preserved. The probe exercised the actual foreground Runtime/Retriever/Context/Gateway/canonical path with headless delivery ACKs. The Forget target was seeded; background Analyzer calls and browser paint were outside this probe's scope.
+- The first probe returned Japanese for normal Chat, but resolved Forget still returned English (`Understood. I've acknowledged...`) despite the Japanese system policy. This motivated repeating the policy, selected from the original canonical input, in the safe Main-facing Forget surrogate. The forgotten target text remains excluded. No model change or broad prompt rewrite was made.
+- Successful normal turn: `9549718f-d8ce-4b08-8003-639e7e40a871`, user message `147725f1-d87e-4983-8076-4cf25c37bcec`; input `こんにちは。今日は少し休憩したい気分です。おすすめの気分転換を一つ、短く教えて。`; output began `こんにちは！少しお休みなさいね。` and remained Japanese. Completed in 4.00 seconds with 46 acknowledged spans and exact canonical readback.
+- Successful Forget turn: `3e9e1792-f1c4-4896-a1b3-9d7b34d57b98`, user message `a7d5cc89-54de-47e3-a276-9cb04bcf6646`; input `ルイボスティーのことを忘れて。`; Main's English internal text retained `Output language: Japanese`; output `記憶は忘れています。さようなら。😊👋`. Completed in 4.36 seconds with 11 acknowledged spans and exact canonical readback. Marker was `resolved` / `mutation_applied=true`; Memory `f1f62b25-e316-4368-9a27-d57dd62fceb5` became `soft_deleted`; `state_revision` changed `0 → 1`; response did not repeat the target.
+- Local probe details/DB remain in ignored artifacts; the acceptance evidence above is preserved in Git. Language compliance is live-verified for these two turns, not guaranteed for every stochastic response. Answer wording/relevance remained awkward (including the normal turn's “雲をつなぐ橋” suggestion and the Forget farewell); response quality/personality/model tuning was not attempted. Browser verification and real Analyzer semantic E2E were not rerun for this language-only fix; the existing regression suite passes and previous P0 live evidence remains above.
+
 ## Next concrete work
+
+1. Review the small fix PR against `main`; merge only after the user's decision.
+2. Use the resulting baseline for ordinary chats over several days, recording language switches, Memory/Recall/correction/Forget behavior, and awkward responses with their turn evidence.
+3. Keep the earlier pending checks below deferred. WP-TXT-09/10, Voice, multiple threads, UI additions, and model tuning require a separate request.
+
+### Retained earlier follow-ups (deferred)
 
 1. No remaining P0 Analyzer/Projector validation blocker is known. Keep the rapid-turn Analyzer timeout/preemption case observable and retryable; choose a product timeout only after a product decision.
 2. Exercise `load older` in the browser with multiple pages, and live-test retrieval timeout against a deliberately delayed local endpoint if such a test service is available.
