@@ -607,11 +607,15 @@ class RuntimeTests(unittest.TestCase):
             profile_id="test",
             elapsed={},
         )
-        builder = ContextBuilder(
-            self.repo, replace(self.config, context_budget_tokens=650)
-        )
+        full_builder = ContextBuilder(self.repo, self.config)
+        full_capsule = full_builder.build(turn, retrieval)
+        # Allow one history message on top of the actual mandatory prompt size.
+        # The language policy must remain mandatory as that prompt grows.
+        budget = full_capsule.estimated_tokens - full_builder.token_estimator("old " * 50) - 4
+        builder = ContextBuilder(self.repo, replace(self.config, context_budget_tokens=budget))
         capsule = builder.build(turn, retrieval)
-        self.assertLessEqual(capsule.estimated_tokens, 650)
+        self.assertLessEqual(capsule.estimated_tokens, budget)
+        self.assertIn("Output language: English.", capsule.messages[0]["content"])
         self.assertEqual(capsule.messages[-1]["content"], "CURRENT INPUT MUST REMAIN")
         self.assertIn(scope["ai_identity_id"], capsule.selected_refs["ai_identity_ids"])
         self.assertIn(latest_id, capsule.selected_refs["recent_message_ids"])
