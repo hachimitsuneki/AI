@@ -1,8 +1,8 @@
 # Text v0.1 Local Runtime
 
-This repository contains the first local foreground conversation slice for the
-Text v0.1 project. The application uses only the Python standard library, a
-local SQLite database, and a local Ollama server.
+This repository contains the local Text v0.1 P0 runtime (WP-TXT-01 through
+WP-TXT-08, including Chat Usability). The application uses only the Python
+standard library, a local SQLite database, and a local Ollama server.
 
 ## Run locally
 
@@ -40,18 +40,32 @@ may be changed only to another loopback address in this P0 runtime.
   metrics, cancellation boundary, and one provider attempt per turn.
 - WP-TXT-06: the browser acknowledges a text span only after a paint boundary;
   only acknowledged spans are projected into the canonical assistant message.
+- WP-TXT-06.5: interruptible chat input, canonical reply/quote references,
+  history search and paging, scroll controls, saved drafts, Copy, and safe Markdown.
+- WP-TXT-07: asynchronous Turn Analyzer proposes Memory/Self/User/Relationship
+  updates from canonical user messages and delivered assistant content.
+- WP-TXT-08: Validator/Projector validates references, privacy, and revisions,
+  then commits accepted semantic state atomically and idempotently.
 
-This slice does not include Turn Analyzer, Validator/Projector mutation,
-semantic memory extraction/persistence, Developer Inspector UI, or Golden
-Harness (WP-TXT-07 through WP-TXT-10). Remember/forget command detection is
-recorded as a durable event; it does not create/delete semantic memories.
-Unresolved forget requests never delete anything.
+Explicit Remember retains a durable command marker and uses Analyzer plus
+Validator/Projector for semantic persistence; a foreground acknowledgment alone
+does not prove a memory was saved. A uniquely resolved Explicit Forget atomically
+soft-deletes the target in the foreground and makes it invisible to subsequent
+Recall/Context/Analyzer evidence. Unresolved forget requests never delete anything.
+
+P0 Analyzer and command Golden regression tests are included. Developer Inspector
+UI (WP-TXT-09) and a standalone Golden Harness (WP-TXT-10) remain deferred, as do
+Voice, multiple chat threads, and Memory Management UI. Real local Ollama
+Memory Claim/User Model commit, Recall, correction, and unique Forget have been
+verified; live Self/Relationship semantic accuracy remains unverified. See
+[`CURRENT.md`](CURRENT.md) for the exact evidence and remaining limits.
 
 ## Verify
 
     python -m unittest discover -s tests -v
     node --check companion/static/app.js
 
-CURRENT.md records the exact implementation state, evidence, known limits,
-and next work package. Canonical requirements and long-term capabilities remain
-in the source specifications under docs/.
+[`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md) is the top-level handoff entry point.
+[`CURRENT.md`](CURRENT.md) records implementation state, evidence, known limits,
+and next work. Canonical requirements and long-term capabilities remain in the
+source specifications indexed by [`docs/SPEC_REGISTRY.md`](docs/SPEC_REGISTRY.md).
