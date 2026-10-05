@@ -1,11 +1,12 @@
 # Current implementation state
 
-Updated: 2026-10-05 (JST)
+Updated: 2026-10-06 (JST)
 
 ## Handoff position
 
 - Repository: https://github.com/hachimitsuneki/AI
-- Target branch: `codex/fix-chat-response-language` (PR targets `main`; merge remains a user decision).
+- Target branch for continued use: `main` via [PR #2](https://github.com/hachimitsuneki/AI/pull/2), explicitly approved for merge by the user on 2026-10-06.
+- Response-language fix branch: `codex/fix-chat-response-language`; reviewed implementation/evidence HEAD: `8bd6152b3359931d73119c58ee4fb9510d2f3353`.
 - Current fix baseline: `main` at the requested Base HEAD `1a721b31c67e22d360a0941a9a42d21080ccbbf6` (`Merge Text v0.1 P0 implementation`).
 - Response-language implementation/tests: `a3218c6ebb4051f528c738428cd7d930ddc0e746`.
 - Independent README cleanup: `97b654fb604bbf91c911d9d2423e72d63d20f3a7`. The following documentation-only commit records this validation; the tracked worktree is clean after it is committed.
@@ -150,9 +151,15 @@ Source: the user's current request, sections 1–6 and its completion criteria. 
 
 ## Next concrete work
 
-1. Review the small fix PR against `main`; merge only after the user's decision.
-2. Use the resulting baseline for ordinary chats over several days, recording language switches, Memory/Recall/correction/Forget behavior, and awkward responses with their turn evidence.
-3. Keep the earlier pending checks below deferred. WP-TXT-09/10, Voice, multiple threads, UI additions, and model tuning require a separate request.
+1. Use the language-fixed `main` baseline for ordinary chats over several days, recording language switches, Memory/Recall/correction/Forget behavior, and awkward responses with their turn evidence.
+2. Keep the earlier pending checks below deferred. WP-TXT-09/10, Voice, multiple threads, UI additions, and model tuning require a separate request.
+
+### Merge approval and handoff — 2026-10-06
+
+- User instruction: `mergeしていいよ`. This authorizes merging PR #2 into `main` and supersedes the earlier instruction to leave this PR unmerged.
+- Before the merge, GitHub confirmed the reviewed head `8bd6152b3359931d73119c58ee4fb9510d2f3353`, base `1a721b31c67e22d360a0941a9a42d21080ccbbf6`, three commits/seven changed files, and `mergeable=true`; the local tracked worktree was clean. No PR-triggered GitHub Actions workflow runs were listed.
+- This follow-up changes only the approval/handoff record. Implementation and test files match the previously verified 45-test state; tests and live Ollama were not rerun for the merge operation. Previous verification limits remain above.
+- Merge with a merge commit so the implementation, independent README cleanup, and validation commits remain traceable. PR #2 records the merge outcome and resulting merge SHA; use `git log -1 main` after synchronizing the local checkout for its exact HEAD. The next activity is ordinary-chat observation on `main`.
 
 ### Retained earlier follow-ups (deferred)
 
